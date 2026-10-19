@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://guanyunmao.github.io/zhixing/zhixing.user.js
 // @updateURL        https://guanyunmao.github.io/zhixing/zhixing.user.js
-// @version             4.0.1
+// @version             4.0.3
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -673,8 +673,13 @@ function ownApiSelfTest() {
     var eps = ownApiEndpoints();
     var base = eps[0];
     if (!base || String(OWN_API.apiKey || "").indexOf("REPLACE") !== -1) {
-        gptApiState("未配置", "red");
-        try { logger("知行还没配置模型接口：请在「设置 → API 设置」里填地址和 Key", "red"); } catch (_) { }
+        if (isBankOn()) {
+            gptApiState("仅题库", "gray");
+            try { logger("未配置模型接口：题库优先已开启，会先用题库；查不到会跳过", "blue"); } catch (_) { }
+            return;
+        }
+        gptApiState("未配置", "gray");
+        try { logger("还没配置模型接口：可在「设置 → API 设置」里填，或打开「题库优先」用题库", "blue"); } catch (_) { }
         return;
     }
     gptApiState("测试中…");
@@ -1207,6 +1212,10 @@ function parseUrlParams() {
 }
 
 function updateLocalStorage(event) {
+    var _cb = event.target;
+    if (_cb.id === 'ZhixingSetting.bankOn') {
+        try { logger(_cb.checked ? '题库优先：已开启（题干会发送到第三方题库）' : '题库优先：已关闭', 'gray'); } catch (_) { }
+    }
     var checkbox = event.target;
     if (checkbox.id === 'ZhixingSetting.goodStudent') {
         localStorage.setItem(checkbox.id, !checkbox.checked);
@@ -6042,6 +6051,16 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
 }
 
 var _ne21NextBankAt = 0;
+function gptApiConfigured() {
+    try {
+        if (!OWN_API || !OWN_API.enabled) return false;
+        var eps = ownApiEndpoints();
+        if (!eps.length) return false;
+        if (String(OWN_API.apiKey || '').indexOf('REPLACE') !== -1) return false;
+        if (!String(OWN_API.model || '').trim()) return false;
+        return true;
+    } catch (_) { return false; }
+}
 function isBankOn() {
     try {
         var v = localStorage.getItem('ZhixingSetting.bankOn');
@@ -6195,6 +6214,11 @@ function getAnswer(_t, _q, retryCount = 0, _skipBank) {
                     return Promise.reject({ c: 0 });
                 }
                 return getAnswer(_t, _q, retryCount, true);
+            }).catch(function (_e) {
+                if (_e && _e.c === 0) throw _e;
+                try { logger(_qPrefix + '[题库] 查询异常：' + (_e && _e.message ? _e.message : _e) + '，改用 AI', 'orange'); } catch (_) { }
+                if (!OWN_API.enabled) { try { logger(_qPrefix + '[题库] 查询异常，且未配置 AI 接口，已跳过', 'orange'); } catch (_) { } throw { c: 0 }; }
+                return getAnswer(_t, _q, retryCount, true);
             });
         }
     }
@@ -6238,6 +6262,15 @@ function getAnswer(_t, _q, retryCount = 0, _skipBank) {
             if (_waitMs > 0) {
                 let _resumeHtml = '<span class="ne21-log-spinner"></span>AI 思考中<span class="ne21-log-dots"><i></i><i></i><i></i></span>' + (retryCount > 0 ? '（第' + (retryCount + 1) + '次）' : '')
                 updateLogEntry($thinkingLog, _resumeHtml, 'gray')
+            }
+
+            /* ---- 没配置 API：题库也没命中时直接跳过，不报错 ---- */
+            if (!gptApiConfigured()) {
+                requestCompleted = true;
+                clearTimeout(longWaitTimer);
+                updateLogEntry($thinkingLog, '未配置模型接口，已跳过本题（可在设置里填 API，或打开「题库优先」）', 'orange');
+                reject({ c: 0 });
+                return;
             }
 
             /* ---- 自建 API 分支 ---- */
