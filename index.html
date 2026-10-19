@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知行 · 网课助手</title>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;padding:18px 14px 40px;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fb;color:#0f172a}
+h1{font-size:19px;margin:0 0 4px}
+.sub{color:#64748b;font-size:13px;margin:0 0 16px}
+.card{background:#fff;border:1px solid #e6ebf3;border-radius:16px;padding:14px;margin-bottom:14px}
+.steps{padding-left:20px;margin:0}
+.steps li{margin:6px 0}
+.item{display:block;padding:12px;border:1px solid #e6ebf3;border-radius:12px;margin:8px 0;background:#fbfcff}
+.name{font-weight:600;font-size:15px}
+.meta{float:right;color:#64748b;font-size:12px}
+.desc{display:block;color:#64748b;font-size:12.5px;margin-top:4px}
+.links{display:flex;gap:14px;margin-top:8px}
+.go{color:#2563eb;font-size:13px;font-weight:600;text-decoration:none}
+.go.alt{color:#64748b}
+.warn{background:#fff7ed;border-color:#fed7aa;color:#9a3412;font-size:13px}
+</style></head>
+<body>
+<h1>知行 · 网课助手</h1>
+<p class="sub">给手机/电脑的脚本管理器安装</p>
+
+<div class="card">
+  <b>先装一个脚本管理器</b>
+  <ol class="steps">
+    <li>手机 Edge → 扩展 → 搜索 <b>Tampermonkey</b> 或 <b>脚本猫</b></li>
+    <li>装好后回到本页，点「安装 →」</li>
+  </ol>
+</div>
+
+<div class="card">
+  <b>选择版本</b>
+  <div class="item"><span class="name">知行 · 通用版</span><span class="meta">v3.20.1 · 638.5 KB</span><span class="desc">完整版，含字体解密表</span><span class="links"><a class="go" href="./zhixing.user.js">安装 →</a><a class="go alt" href="./zhixing.user.js" download>下载文件</a></span></div>
+<div class="item"><span class="name">知行 · 通用版（轻量）</span><span class="meta">v3.20.1-lite · 428.5 KB</span><span class="desc">去掉字体表，小 210KB</span><span class="links"><a class="go" href="./zhixing-lite.user.js">安装 →</a><a class="go alt" href="./zhixing-lite.user.js" download>下载文件</a></span></div>
+</div>
+
+<div class="card warn">
+  <b>点了「安装」看到一堆代码？</b><br>
+  说明管理器没拦截这个链接。点「下载文件」存下来，再到管理器里「导入脚本 → 本地文件」。
+</div>
+</body></html>
