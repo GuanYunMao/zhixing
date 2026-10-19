@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://cdn.jsdelivr.net/gh/GuanYunMao/zhixing@main/zhixing.user.js
 // @updateURL        https://cdn.jsdelivr.net/gh/GuanYunMao/zhixing@main/zhixing.user.js
-// @version             3.21.0
+// @version             4.0.0
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -31,6 +31,7 @@
 // @connect             127.0.0.1
 // @connect             *
 // @connect             api.deepseek.com
+// @connect             cx.icodef.com
 // @run-at              document-end
 // @grant               unsafeWindow
 // @grant               GM_xmlhttpRequest
@@ -147,6 +148,7 @@ var setting = {
 
     examTurn: 0,
     previewTurn: 1,
+    bankOn: 0,
     examTurnTime: 0,
     goodStudent: 1,
     alterTitle: 1,
@@ -1956,6 +1958,8 @@ function showBox() {
                         <label title="正式考试答完自动点下一题（不含整卷预览）"><input type="checkbox" id="ZhixingSetting.examTurn">考试跳题</label>
                         <div class="ne21-group">整卷预览</div>
                         <label title="整卷预览答完自动下一题"><input type="checkbox" id="ZhixingSetting.previewTurn">预览跳题</label>
+                        <div class="ne21-group">题库</div>
+                        <label title="先查第三方题库，查不到再用 AI；题干会发送到题库服务器"><input type="checkbox" id="ZhixingSetting.bankOn">题库优先</label>
                         <div class="ne21-group">重做</div>
                         <label title="勾选后，从头扫描时连已答的题一起重做"><input type="checkbox" id="ZhixingSetting.redo">覆盖已答题</label>
                     </div>
@@ -2147,7 +2151,7 @@ function showBox() {
                 try { console.warn('[知行] 安全起见已把「自动交卷」默认关闭，需要时在设置里手动打开'); } catch (_) { }
             }
 
-            ['sub', 'force', 'examTurn', 'previewTurn', 'goodStudent', 'alterTitle', 'redo', 'fuzzyMatch'].forEach(function (settingId) {
+            ['sub', 'force', 'examTurn', 'previewTurn', 'bankOn', 'goodStudent', 'alterTitle', 'redo', 'fuzzyMatch'].forEach(function (settingId) {
                 var checkbox = document.getElementById('ZhixingSetting.' + settingId);
                 if (!checkbox) return;
                 checkbox.addEventListener('change', updateLocalStorage);
@@ -6037,7 +6041,124 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
     }
 }
 
-function getAnswer(_t, _q, retryCount = 0) {
+var _ne21NextBankAt = 0;
+function isBankOn() {
+    try {
+        var v = localStorage.getItem('ZhixingSetting.bankOn');
+        return v === null ? !!setting.bankOn : v === 'true';
+    } catch (_) { return false; }
+}
+function bankTypeCode(typeName) {
+    var t = String(typeName || '');
+    if (t.indexOf('多选') !== -1) return 1;
+    if (t.indexOf('判断') !== -1) return 3;
+    if (t.indexOf('填空') !== -1) return 4;
+    if (t.indexOf('简答') !== -1) return 5;
+    return 0;
+}
+function gptBankList() {
+    try {
+        var raw = localStorage.getItem('ZhixingSetting.bankList');
+        if (raw) {
+            var arr = JSON.parse(raw);
+            if (Object.prototype.toString.call(arr) === '[object Array]') {
+                var out = arr.filter(function (u) { return typeof u === "string" && u; });
+                if (out.length) return out;
+            }
+        }
+    } catch (_) { }
+    var one = '';
+    try { one = localStorage.getItem('ZhixingSetting.bankUrl') || ''; } catch (_) { }
+    return [one || 'https://cx.icodef.com/wyn-nb?v=4'];
+}
+function bankHost(u) {
+    try { return new URL(u).host; } catch (_) { return String(u).slice(0, 24); }
+}
+function normalizeBankAnswer(data, typeName) {
+    var s = String(data || '').replace(/\s*\((?:si|SI)\)\.?$/, '').trim();
+    if (s.indexOf('#') === -1) return s;
+    var parts = s.split('#').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+    if (!parts.length) return s;
+    var t = String(typeName || '');
+    if (t.indexOf('多选') !== -1) return parts.join('|');
+    return parts[0];
+}
+function gptBankQuery(url, q, type, attempt, cb) {
+    var now = Date.now();
+    var wait = Math.max(0, _ne21NextBankAt - now);
+    _ne21NextBankAt = Math.max(now, _ne21NextBankAt) + 1200;
+    setTimeout(function () {
+        var finished = false;
+        function done(ans, reason) { if (finished) return; finished = true; cb(ans, reason); }
+        try {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: url,
+                headers: { 'content-type': 'application/x-www-form-urlencoded' },
+                data: 'question=' + encodeURIComponent(q) + '&type=' + bankTypeCode(type) + '&id=0',
+                timeout: 6000,
+                onload: function (xhr) {
+                    var j = null;
+                    try { j = JSON.parse(xhr.responseText); } catch (_) { }
+                    if (!j) { done(null, '返回不是 JSON'); return; }
+                    var code = Number(j.code);
+                    var data = j.data == null ? '' : String(j.data).trim();
+                    if (code === 1 && data) {
+                        if (/^https?:\/\//i.test(data)) {
+                            var _imgUrl = data.replace(/\s*\((?:si|SI)\)\.?$/, '').trim();
+                            try {
+                                if (/^https:\/\/p\.ananas\.chaoxing\.com\//i.test(_imgUrl)) {
+                                    logger('[题库] 返回图片答案，点图可放大：<a href="' + _imgUrl + '" target="_blank" rel="noopener"><img src="' + _imgUrl + '" style="display:block;max-width:180px;max-height:120px;margin-top:6px;border-radius:6px;border:1px solid rgba(15,23,42,.12)"></a>', 'blue');
+                                } else {
+                                    logger('[题库] 返回图片答案：' + _imgUrl, 'blue');
+                                }
+                            } catch (_) { }
+                            done(null, null);
+                            return;
+                        }
+                        done(normalizeBankAnswer(data, type));
+                        return;
+                    }
+                    if (code === -2 && attempt < 1) {
+                        finished = true;
+                        setTimeout(function () { gptBankQuery(url, q, type, attempt + 1, cb); }, 1600);
+                        return;
+                    }
+                    done(null, code === -1 ? '未命中' : ('code=' + code));
+                },
+                onerror: function () { done(null, '连接失败'); },
+                ontimeout: function () { done(null, '超时'); }
+            });
+        } catch (_) { done(null, '调用异常'); }
+    }, wait);
+}
+function gptBankAnswer(p) {
+    return new Promise(function (resolve) {
+        var q = '';
+        try { q = ownApiStripMedia(p.question || '').trim(); } catch (_) { q = String(p.question || '').trim(); }
+        if (!q) { resolve(null); return; }
+        var list = gptBankList();
+        function tryNext(i) {
+            if (i >= list.length) { resolve(null); return; }
+            var url = list[i];
+            var host = bankHost(url);
+            gptBankQuery(url, q, p.type, 0, function (ans, reason) {
+                if (ans) {
+                    try { logger('[题库] ' + host + ' 命中', 'green'); } catch (_) { }
+                    resolve(ans);
+                    return;
+                }
+                if (reason) {
+                    try { logger('[题库] ' + host + '：' + reason, 'orange'); } catch (_) { }
+                }
+                tryNext(i + 1);
+            });
+        }
+        tryNext(0);
+    });
+}
+
+function getAnswer(_t, _q, retryCount = 0, _skipBank) {
 
     let _payload, _display
     if (_q && typeof _q === 'object' && (_q.payload != null || _q.display != null)) {
@@ -6056,6 +6177,27 @@ function getAnswer(_t, _q, retryCount = 0) {
     }
     var _dispShort = String(_display).replace(/<img[^>]*>/gi, '[图]').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     if (_dispShort.length > 300) _dispShort = _dispShort.slice(0, 300) + '…';
+
+    /* 题库优先：命中直接返回，未命中回落 AI */
+    if (!_skipBank && isBankOn()) {
+        var _bp = null;
+        try { _bp = ownApiParsePayload(_payload); } catch (_) { }
+        if (_bp) {
+            logger(_qPrefix + '题目:' + _dispShort, 'pink');
+            return gptBankAnswer(_bp).then(function (bankAns) {
+                if (bankAns) {
+                    logger(_qPrefix + '[题库] 命中：' + bankAns, 'green');
+                    return bankAns;
+                }
+                logger(_qPrefix + '[题库] 未命中，改用 AI', 'orange');
+                if (!OWN_API.enabled) {
+                    logger(_qPrefix + '[题库] 未命中，且未配置 AI 接口，已跳过', 'orange');
+                    return Promise.reject({ c: 0 });
+                }
+                return getAnswer(_t, _q, retryCount, true);
+            });
+        }
+    }
     logger(_qPrefix + '题目:' + _dispShort, 'pink')
 
     let _thinkingHtml = '<span class="ne21-log-spinner"></span>AI 思考中<span class="ne21-log-dots"><i></i><i></i><i></i></span>' + (retryCount > 0 ? '（第' + (retryCount + 1) + '次）' : '')
@@ -6086,7 +6228,7 @@ function getAnswer(_t, _q, retryCount = 0) {
 
                 updateLogEntry($thinkingLog, '请求超过2.5分钟未响应，正在重新发起请求...（第' + (retryCount + 1) + '次重试）', 'orange')
 
-                getAnswer(_t, _q, retryCount + 1).then(resolve).catch(reject)
+                getAnswer(_t, _q, retryCount + 1, _skipBank).then(resolve).catch(reject)
             }
         }, 150000 + _waitMs);
 
@@ -6112,7 +6254,7 @@ function getAnswer(_t, _q, retryCount = 0) {
                     clearTimeout(longWaitTimer);
                     updateLogEntry($thinkingLog, "接口出错：" + (ownErr && ownErr.message ? ownErr.message : ownErr), "red");
                     if (retryCount >= _maxRetries) { reject({ "c": 666 }); return; }
-                    getAnswer(_t, _q, retryCount + 1).then(resolve).catch(reject);
+                    getAnswer(_t, _q, retryCount + 1, _skipBank).then(resolve).catch(reject);
                 });
                 return;
             }
@@ -6199,7 +6341,7 @@ function getAnswer(_t, _q, retryCount = 0) {
                         return;
                     }
                     updateLogEntry($thinkingLog, '请求超时，正在自动重试...（第' + (retryCount + 1) + '次重试）', 'orange')
-                    getAnswer(_t, _q, retryCount + 1).then(resolve).catch(reject)
+                    getAnswer(_t, _q, retryCount + 1, _skipBank).then(resolve).catch(reject)
                 }
             });
         }, _waitMs);
