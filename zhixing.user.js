@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://guanyunmao.github.io/zhixing/zhixing.user.js
 // @updateURL        https://guanyunmao.github.io/zhixing/zhixing.user.js
-// @version             4.1.2
+// @version             4.1.3
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -141,16 +141,16 @@ var setting = {
 
     work: 1,
     time: 2500,
-    sub: 1,
+    sub: 0,
     force: 0,
     decrypt: 1,
-    redo: 0,
+    redo: 1,
 
-    examTurn: 0,
+    examTurn: 1,
     previewTurn: 1,
-    bankOn: 0,
+    bankOn: 1,
     examTurnTime: 0,
-    goodStudent: 1,
+    goodStudent: 0,
     alterTitle: 1,
 
     autoLogin: 0,
@@ -584,7 +584,7 @@ function ownApiAnswer(payloadStr) {
                         try {
                             var _u = obj.usage || {};
                             var _rt = (_u.completion_tokens_details && _u.completion_tokens_details.reasoning_tokens) || 0;
-                            logger("tokens " + (_u.prompt_tokens || 0) + " → " + (_u.completion_tokens || 0) + "（思考 " + _rt + "）", "gray");
+                            if (localStorage.getItem('ZhixingSetting.debug') === 'true') logger("tokens " + (_u.prompt_tokens || 0) + " → " + (_u.completion_tokens || 0) + "（思考 " + _rt + "）", "gray");
                         } catch (_) { }
                         if (ans) { done(resolve, ans); return; }
                         var hasReason = false;
@@ -2203,8 +2203,10 @@ function showBox() {
                 var _sv = localStorage.getItem('ZhixingSetting.' + settingId);
                 if (settingId === 'goodStudent') {
                     checkbox.checked = _sv === null ? !setting.goodStudent : _sv !== 'true';
+                    if (_sv === null) localStorage.setItem('ZhixingSetting.' + settingId, checkbox.checked ? 'false' : 'true');
                 } else {
                     checkbox.checked = _sv === null ? !!setting[settingId] : _sv === 'true';
+                    if (_sv === null) localStorage.setItem('ZhixingSetting.' + settingId, checkbox.checked ? 'true' : 'false');
                 }
             });
 
@@ -6203,7 +6205,6 @@ function gptBankAnswer(p) {
             var host = bankHost(url);
             gptBankQuery(url, q, p.type, 0, function (ans, reason) {
                 if (ans) {
-                    logger('[题库] ' + host + ' 命中', 'green');
                     resolve(ans);
                     return;
                 }
