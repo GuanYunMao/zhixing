@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
 // @updateURL        https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
-// @version             4.1.1-lite
+// @version             4.1.2-lite
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -427,11 +427,11 @@ function ownApiImgList(payloadStr) {
         var u = ownApiAbsUrl(String(m[1]).replace(/\\+$/, ""));
         if (!u) continue;
         if (u.indexOf("blob:") === 0) {
-            try { logger("这张图是 blob: 地址，模型无法访问，已跳过", "orange"); } catch (_) { }
+            logger("这张图是 blob: 地址，模型无法访问，已跳过", "orange");
             continue;
         }
         if (u.indexOf("data:") === 0 && u.length > 400000) {
-            try { logger("内联图片过大（" + Math.round(u.length / 1024) + "KB），为避免卡住已跳过", "orange"); } catch (_) { }
+            logger("内联图片过大（" + Math.round(u.length / 1024) + "KB），为避免卡住已跳过", "orange");
             continue;
         }
         if (urls.indexOf(u) === -1) urls.push(u);
@@ -529,7 +529,7 @@ function ownApiAnswer(payloadStr) {
             if (finished) return;
             var sec = Math.round((Date.now() - startedAt) / 1000);
             if (sec > 60) return;
-            try { logger("AI 仍在思考… 已等待 " + sec + "s", "gray"); } catch (_) { }
+            logger("AI 仍在思考… 已等待 " + sec + "s", "gray");
         }, Math.min(15000, Math.max(2000, Math.round(limitMs / 5))));
         function done(fn, val) {
             if (finished) return;
@@ -545,7 +545,7 @@ function ownApiAnswer(payloadStr) {
             var isLast = idx >= eps.length - 1;
             var built = ownApiBody(payloadStr, !imagesDisabled && ownApiWantImages());
             if (built.images > 0) {
-                try { logger("本题附 " + built.images + " 张图片（以 URL 发给模型）", "blue"); } catch (_) { }
+                logger("本题附 " + built.images + " 张图片（以 URL 发给模型）", "blue");
             }
             var body = {
                 model: OWN_API.model,
@@ -597,7 +597,7 @@ function ownApiAnswer(payloadStr) {
                     if (xhr.status === 400 && built.images > 0 && !imagesDisabled) {
                         imagesDisabled = true;
                         OWN_API.visionSupported = false;
-                        try { logger("模型/服务拒绝了图片（HTTP 400），已改用纯文本重试", "orange"); } catch (_) { }
+                        logger("模型/服务拒绝了图片（HTTP 400），已改用纯文本重试", "orange");
                         attempt();
                         return;
                     }
@@ -663,16 +663,16 @@ function gptPullModels() {
                     var list = [];
                     try { list = JSON.parse(xhr.responseText).data || []; } catch (_) { }
                     var ids = [];
-                    if (Object.prototype.toString.call(list) === '[object Array]') {
+                    if (Array.isArray(list)) {
                         ids = list.map(function (m) { return m && m.id ? m.id : m; }).filter(function (x) { return typeof x === "string" && x; });
                     }
                     if (ids.length) {
                         gptApplyModels(ids);
                         gptApiState('✅ 拉取到 ' + ids.length + ' 个模型', 'green');
-                        try { logger('已拉取模型：' + ids.slice(0, 6).join(', ') + (ids.length > 6 ? ' …' : ''), 'green'); } catch (_) { }
+                        logger('已拉取模型：' + ids.slice(0, 6).join(', ') + (ids.length > 6 ? ' …' : ''), 'green');
                     } else {
                         gptApiState('⚠ 服务没返回模型列表', 'red');
-                        try { logger('该地址的 /models 没有模型列表，请手动填写模型名', 'orange'); } catch (_) { }
+                        logger('该地址的 /models 没有模型列表，请手动填写模型名', 'orange');
                     }
                 } else if (xhr.status === 401 || xhr.status === 403) {
                     gptApiState('❌ 鉴权失败 ' + xhr.status, 'red');
@@ -722,15 +722,15 @@ function ownApiSelfTest() {
     if (!base || String(OWN_API.apiKey || "").indexOf("REPLACE") !== -1) {
         if (isBankOn()) {
             gptApiState("仅题库", "gray");
-            try { logger("未配置模型接口：题库优先已开启，会先用题库；查不到会跳过", "blue"); } catch (_) { }
+            logger("未配置模型接口：题库优先已开启，会先用题库；查不到会跳过", "blue");
             return;
         }
         gptApiState("未配置", "gray");
-        try { logger("还没配置模型接口：可在「设置 → API 设置」里填，或打开「题库优先」用题库", "blue"); } catch (_) { }
+        logger("还没配置模型接口：可在「设置 → API 设置」里填，或打开「题库优先」用题库", "blue");
         return;
     }
     gptApiState("测试中…");
-    try { logger("知行 · 模型接口：" + base + "  模型：" + OWN_API.model, "blue"); } catch (_) { }
+    logger("知行 · 模型接口：" + base + "  模型：" + OWN_API.model, "blue");
 
     function chatPing() {
         GM_xmlhttpRequest({
@@ -742,15 +742,15 @@ function ownApiSelfTest() {
             onload: function (xhr) {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     gptApiState("✅ 连接成功（服务无模型列表）", "green", "该服务不提供 /models，请手动确认模型名");
-                    try { logger("API 自检成功（该服务不提供 /models，已用对话探活）", "green"); } catch (_) { }
+                    logger("API 自检成功（该服务不提供 /models，已用对话探活）", "green");
                 } else {
                     var o = null; try { o = JSON.parse(xhr.responseText); } catch (_) { }
                     gptApiState("❌ HTTP " + xhr.status, "red");
-                    try { logger("API 自检失败 HTTP " + xhr.status + "：" + ownApiErrText(o, xhr), "red"); } catch (_) { }
+                    logger("API 自检失败 HTTP " + xhr.status + "：" + ownApiErrText(o, xhr), "red");
                 }
             },
-            onerror: function () { gptApiState("❌ 无法连接", "red"); try { logger("API 自检失败：无法连接 " + base, "red"); } catch (_) { } },
-            ontimeout: function () { gptApiState("❌ 连接超时", "red"); try { logger("API 自检失败：超时", "red"); } catch (_) { } }
+            onerror: function () { gptApiState("❌ 无法连接", "red"); logger("API 自检失败：无法连接 " + base, "red"); },
+            ontimeout: function () { gptApiState("❌ 连接超时", "red"); logger("API 自检失败：超时", "red"); }
         });
     }
 
@@ -775,10 +775,10 @@ function ownApiSelfTest() {
                 if (mine && Object.prototype.toString.call(mine.input_modalities) === "[object Array]") {
                     if (mine.input_modalities.indexOf("image") !== -1) {
                         OWN_API.visionSupported = true;
-                        try { logger("该模型支持读图：图片题会自动附图", "blue"); } catch (_) { }
+                        logger("该模型支持读图：图片题会自动附图", "blue");
                     } else {
                         OWN_API.visionSupported = false;
-                        try { logger("该模型不支持图片输入，图片题只能靠文字（可换 deepseek-flash 这类多模态）", "orange"); } catch (_) { }
+                        logger("该模型不支持图片输入，图片题只能靠文字（可换 deepseek-flash 这类多模态）", "orange");
                     }
                 }
                 gptApplyModels(ids);
@@ -788,24 +788,24 @@ function ownApiSelfTest() {
                 } else {
                     gptApiState("⚠ 模型不在可选列表", "red", "可选模型：" + ids.join(" / ") + "；当前填的是 " + OWN_API.model);
                 }
-                try { logger("API 自检成功：" + (ids.length ? ids.slice(0, 6).join(", ") : "已连接"), "green"); } catch (_) { }
+                logger("API 自检成功：" + (ids.length ? ids.slice(0, 6).join(", ") : "已连接"), "green");
                 if (!hasModel) {
-                    try { logger("注意：可用模型里没有 " + OWN_API.model + "，检查 model 是否写错", "orange"); } catch (_) { }
+                    logger("注意：可用模型里没有 " + OWN_API.model + "，检查 model 是否写错", "orange");
                 }
                 return;
             }
             if (xhr.status === 404 || xhr.status === 405 || xhr.status === 501) { chatPing(); return; }
             if (xhr.status === 401 || xhr.status === 403) {
                 gptApiState("❌ 鉴权失败 " + xhr.status, "red");
-                try { logger("API 自检失败 HTTP " + xhr.status + "：鉴权被拒，检查 Key 与鉴权方式（当前 " + (OWN_API.authStyle || "bearer") + "）", "red"); } catch (_) { }
+                logger("API 自检失败 HTTP " + xhr.status + "：鉴权被拒，检查 Key 与鉴权方式（当前 " + (OWN_API.authStyle || "bearer") + "）", "red");
                 return;
             }
             var o2 = null; try { o2 = JSON.parse(xhr.responseText); } catch (_) { }
             gptApiState("❌ HTTP " + xhr.status, "red");
-            try { logger("API 自检失败 HTTP " + xhr.status + "：" + ownApiErrText(o2, xhr), "red"); } catch (_) { }
+            logger("API 自检失败 HTTP " + xhr.status + "：" + ownApiErrText(o2, xhr), "red");
         },
-        onerror: function () { gptApiState("❌ 无法连接", "red"); try { logger("API 自检失败：无法连接 " + base + "（检查网络 / @connect / 代理）", "red"); } catch (_) { } },
-        ontimeout: function () { gptApiState("❌ 连接超时", "red"); try { logger("API 自检失败：连接超时", "red"); } catch (_) { } }
+        onerror: function () { gptApiState("❌ 无法连接", "red"); logger("API 自检失败：无法连接 " + base + "（检查网络 / @connect / 代理）", "red"); },
+        ontimeout: function () { gptApiState("❌ 连接超时", "red"); logger("API 自检失败：连接超时", "red"); }
     });
 }
 
@@ -838,11 +838,11 @@ function gptRunGate(fn) {
     if (window.__gptWantStart) { window.__gptRunStarted = true; }
     if (gptRunAllowed()) {
         gptTouchAutoRun();
-        try { fn(); } catch (e) { try { logger('启动失败：' + (e && e.message ? e.message : e), 'red'); } catch (_) { } }
+        try { fn(); } catch (e) { logger('启动失败：' + (e && e.message ? e.message : e), 'red'); }
         return;
     }
     window.__gptPendingStart = fn;
-    try { logger('已就绪（手动模式）：点标题栏 ▶ 才会动手', 'blue'); } catch (_) { }
+    logger('已就绪（手动模式）：点标题栏 ▶ 才会动手', 'blue');
 }
 
 function requestGuardClientId() {
@@ -1012,7 +1012,7 @@ function toggleBoxVisibility() {
     if (localStorage.getItem('ZhixingSetting.showBox') === 'hide') {
         $box.css('display', '');
         localStorage.setItem('ZhixingSetting.showBox', 'show');
-        try { logger('Alt+Z 显示面板'); } catch (_) {}
+        logger('Alt+Z 显示面板');
     } else {
         $box.css('display', 'none');
         localStorage.setItem('ZhixingSetting.showBox', 'hide');
@@ -1232,20 +1232,13 @@ if (_l.hostname.startsWith('i.mooc.') || _l.hostname.startsWith('i.chaoxing.com'
 } else if (_l.pathname.includes('/mooc2/exam/exam-list')) {
 
 } else if (_l.pathname == '/mycourse/stu') {
-    checkBrowser()
-} else {
+  } else {
 
     if (window === top) {
         logger('知行已就绪：进入课程/作业/考试页后，点面板「开始」才动手', 'green');
     }
 }
 
-function checkBrowser() {
-    var userAgent = navigator.userAgent
-    if (userAgent.indexOf('Chrome') == -1 || GM_info.scriptHandler != 'ScriptCat') {
-
-    }
-}
 
 function parseUrlParams() {
     let query = window.location.search.substring(1);
@@ -1261,7 +1254,7 @@ function parseUrlParams() {
 function updateLocalStorage(event) {
     var _cb = event.target;
     if (_cb.id === 'ZhixingSetting.bankOn') {
-        try { logger(_cb.checked ? '题库优先：已开启（题干会发送到第三方题库）' : '题库优先：已关闭', 'gray'); } catch (_) { }
+        logger(_cb.checked ? '题库优先：已开启（题干会发送到第三方题库）' : '题库优先：已关闭', 'gray');
     }
     var checkbox = event.target;
     if (checkbox.id === 'ZhixingSetting.goodStudent') {
@@ -1275,10 +1268,6 @@ function isRedoMode() {
     var stored = localStorage.getItem('ZhixingSetting.redo');
     if (stored !== null) return stored === 'true';
     return !!setting.redo;
-}
-
-function isFuzzyMatchEnabled() {
-    return true;
 }
 
 function gptNorm(s) {
@@ -1346,7 +1335,7 @@ function gptRecordFail(msg) {
         window.__gptFails.push({ t: Date.now(), msg: String(msg || '') });
         gptUpdateFailChip();
     } catch (_) { }
-    try { logger(msg, 'red'); } catch (_) { }
+    logger(msg, 'red');
 }
 function gptRedoAll() {
     try {
@@ -1364,7 +1353,7 @@ function gptRedoAll() {
         var _redoMode = false;
         try { _redoMode = (typeof isRedoMode === 'function') ? isRedoMode() : false; } catch (_) { }
         logger('从头扫描：从第 1 题重新开始（不刷新页面）· ' + (_redoMode ? '覆盖已答' : '只补未答'), 'blue');
-        if (!_redoMode) { try { logger('提示：当前只补未答，已答的会跳过；要连已答一起重做，请勾选「覆盖已答题」', 'orange'); } catch (_) { } }
+        if (!_redoMode) { logger('提示：当前只补未答，已答的会跳过；要连已答一起重做，请勾选「覆盖已答题」', 'orange'); }
         if (_p.indexOf('/mooc2/work/dowork') !== -1 || _p.indexOf('/work/phone/doHomeWork') !== -1) { missonHomeWork(); return; }
         if (_p.indexOf('/mooc2/exam/preview') !== -1) { missonExamPreview(); return; }
         if (_p.indexOf('/exam/test/') !== -1) { missonExam(); return; }
@@ -1395,7 +1384,6 @@ function gptPurgeLetters(aiAnswer) {
 }
 
 function findBestFuzzyMatch(optionTexts, aiAnswer, threshold) {
-    if (!isFuzzyMatchEnabled()) return -1;
     if (!aiAnswer || !optionTexts || optionTexts.length === 0) return -1;
     var _letters = gptPurgeLetters(aiAnswer);
     if (_letters.length === 1) {
@@ -1440,7 +1428,6 @@ function findBestFuzzyMatch(optionTexts, aiAnswer, threshold) {
 }
 
 function findFuzzyMatchMultiple(optionTexts, aiAnswer, threshold) {
-    if (!isFuzzyMatchEnabled()) return [];
     if (!aiAnswer || !optionTexts || optionTexts.length === 0) return [];
     var _ml = gptPurgeLetters(aiAnswer);
     if (_ml.length > 1) {
@@ -2084,7 +2071,7 @@ function showBox() {
             if (!_started) {
                 if (!window.__gptPendingStart) {
                     window.__gptWantStart = true;
-                    try { logger('已按下开始：页面任务就绪后会自动动手', 'green'); } catch (_) { }
+                    logger('已按下开始：页面任务就绪后会自动动手', 'green');
                     try { gptRefreshPauseBtn(); } catch (_) { }
                     return;
                 }
@@ -2092,8 +2079,8 @@ function showBox() {
                 window.__gptPendingStart = null;
                 window.__gptRunStarted = true;
                 try { if (typeof gptTouchAutoRun === 'function') gptTouchAutoRun(); } catch (_) { }
-                try { logger('开始处理当前页面', 'green'); } catch (_) { }
-                try { _fn(); } catch (err) { try { logger('启动失败：' + (err && err.message ? err.message : err), 'red'); } catch (_) { } }
+                logger('开始处理当前页面', 'green');
+                try { _fn(); } catch (err) { logger('启动失败：' + (err && err.message ? err.message : err), 'red'); }
                 try { gptRefreshPauseBtn(); } catch (_) { }
                 return;
             }
@@ -2102,9 +2089,9 @@ function showBox() {
             localStorage.setItem('ZhixingSetting.isPaused', isPaused);
             try { gptRefreshPauseBtn(); } catch (_) { }
             if (isPaused) {
-                try { logger('脚本已暂停运行', 'orange'); } catch (_) { }
+                logger('脚本已暂停运行', 'orange');
             } else {
-                try { logger('脚本已恢复运行', 'green'); } catch (_) { }
+                logger('脚本已恢复运行', 'green');
             }
         });
 
@@ -2290,7 +2277,7 @@ function showBox() {
             $ownModelSelect.on("change.gptjsOwnModel", function () {
                 OWN_API.model = $(this).val();
                 try { gptFillModelSelect(OWN_API.availableModels || OWN_API.models, OWN_API.model); } catch (_) { }
-                try { logger("已切换模型：" + OWN_API.model, "blue"); } catch (_) {}
+                logger("已切换模型：" + OWN_API.model, "blue");
             });
         } catch (_) {}
     }
@@ -2332,9 +2319,9 @@ function showBox() {
             $('#ne21ApiBase').val(OWN_API.baseUrl || '');
             $('#ne21ApiKey').val(String(OWN_API.apiKey || '').indexOf('REPLACE') !== -1 ? '' : (OWN_API.apiKey || ''));
             try {
-                var _initModels = (Object.prototype.toString.call(OWN_API.availableModels) === '[object Array]' && OWN_API.availableModels.length)
+                var _initModels = (Array.isArray(OWN_API.availableModels) && OWN_API.availableModels.length)
                     ? OWN_API.availableModels
-                    : ((Object.prototype.toString.call(OWN_API.models) === '[object Array]' && OWN_API.models.length) ? OWN_API.models : (OWN_API.model ? [OWN_API.model] : []));
+                    : ((Array.isArray(OWN_API.models) && OWN_API.models.length) ? OWN_API.models : (OWN_API.model ? [OWN_API.model] : []));
                 gptFillModelSelect(_initModels, OWN_API.model);
                 $('#ne21ApiBase, #ne21ApiKey, #ne21ApiModel, #ne21ApiModelSel, #ne21ApiAuth').on('input.gptDirty change.gptDirty', function () {
                     try { if (String($('#ne21ApiState').text() || '').indexOf('正在测试') === -1) gptApiState('有未保存的修改'); } catch (_) { }
@@ -2389,7 +2376,7 @@ function showBox() {
                 OWN_API.vision = $('#ne21ApiVision').is(':checked') ? 'auto' : false;
                 OWN_API.models = [model];
                 OWN_API.enabled = true;
-                try { GM_setValue('OWN_API_CONFIG', { baseUrl: base, apiKey: key, model: model, models: (Object.prototype.toString.call(OWN_API.availableModels) === '[object Array]' && OWN_API.availableModels.length) ? OWN_API.availableModels : [model], enabled: true, authStyle: OWN_API.authStyle, vision: OWN_API.vision, effort: OWN_API.effort }); } catch (_) { }
+                try { GM_setValue('OWN_API_CONFIG', { baseUrl: base, apiKey: key, model: model, models: (Array.isArray(OWN_API.availableModels) && OWN_API.availableModels.length) ? OWN_API.availableModels : [model], enabled: true, authStyle: OWN_API.authStyle, vision: OWN_API.vision, effort: OWN_API.effort }); } catch (_) { }
                 try {
                     var $ms = $('#modelSelect');
                     if ($ms.length) { $ms.empty().append($('<option>').attr('value', model).text(model)).val(model); }
@@ -2397,7 +2384,7 @@ function showBox() {
                 gptApiState('正在测试…');
                 window.__gptOwnApiTested = false;
                 try { ownApiSelfTest(); } catch (_) { }
-                try { logger('API 配置已保存：' + base + ' / ' + model, 'green'); } catch (_) { }
+                logger('API 配置已保存：' + base + ' / ' + model, 'green');
             });
         }
     } catch (_apiErr) { console.warn('[知行] API 设置面板渲染失败', _apiErr); }
@@ -6133,7 +6120,7 @@ function gptBankList() {
         var raw = localStorage.getItem('ZhixingSetting.bankList');
         if (raw) {
             var arr = JSON.parse(raw);
-            if (Object.prototype.toString.call(arr) === '[object Array]') {
+            if (Array.isArray(arr)) {
                 var out = arr.filter(function (u) { return typeof u === "string" && u; });
                 if (out.length) return out;
             }
@@ -6216,12 +6203,12 @@ function gptBankAnswer(p) {
             var host = bankHost(url);
             gptBankQuery(url, q, p.type, 0, function (ans, reason) {
                 if (ans) {
-                    try { logger('[题库] ' + host + ' 命中', 'green'); } catch (_) { }
+                    logger('[题库] ' + host + ' 命中', 'green');
                     resolve(ans);
                     return;
                 }
                 if (reason) {
-                    try { logger('[题库] ' + host + '：' + reason, 'orange'); } catch (_) { }
+                    logger('[题库] ' + host + '：' + reason, 'orange');
                 }
                 tryNext(i + 1);
             });
@@ -6269,8 +6256,8 @@ function getAnswer(_t, _q, retryCount = 0, _skipBank) {
                 return getAnswer(_t, _q, retryCount, true);
             }).catch(function (_e) {
                 if (_e && _e.c === 0) throw _e;
-                try { logger(_qPrefix + '[题库] 查询异常：' + (_e && _e.message ? _e.message : _e) + '，改用 AI', 'orange'); } catch (_) { }
-                if (!OWN_API.enabled) { try { logger(_qPrefix + '[题库] 查询异常，且未配置 AI 接口，已跳过', 'orange'); } catch (_) { } throw { c: 0 }; }
+                logger(_qPrefix + '[题库] 查询异常：' + (_e && _e.message ? _e.message : _e) + '，改用 AI', 'orange');
+                if (!OWN_API.enabled) { logger(_qPrefix + '[题库] 查询异常，且未配置 AI 接口，已跳过', 'orange'); throw { c: 0 }; }
                 return getAnswer(_t, _q, retryCount, true);
             });
         }
@@ -6740,15 +6727,10 @@ function tidyQuestion(s) {
 }
 
 var ZX_FONT_TABLE_GZ = "";
-if (!window.__zxFontTable || !window.__zxFontTable.__ok) { window.__zxFontTable = null; }
 
 function gptFontTable() {
     if (window.__zxFontTable) return Promise.resolve(window.__zxFontTable);
-    var raw = null;
-    try { raw = GM_getResourceText('Table'); } catch (_) { }
-    if (raw) {
-        try { window.__zxFontTable = JSON.parse(raw); return Promise.resolve(window.__zxFontTable); } catch (_) { }
-    }
+    if (!ZX_FONT_TABLE_GZ) return Promise.resolve(null);
     return new Promise(function (resolve) {
         try {
             if (typeof DecompressionStream === 'undefined') { resolve(null); return; }
