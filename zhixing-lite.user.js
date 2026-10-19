@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
 // @updateURL        https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
-// @version             4.0.3-lite
+// @version             4.1.1-lite
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -640,6 +640,53 @@ function gptFillModelSelect(ids, current) {
     } catch (_) { }
 }
 
+function gptPullModels() {
+    try {
+        var base = String($('#ne21ApiBase').val() || '').trim().replace(/\/+$/, '');
+        var key = String($('#ne21ApiKey').val() || '').trim();
+        var style = String($('#ne21ApiAuth').val() || 'bearer');
+        if (!base) { gptApiState('先填地址', 'red'); return; }
+        var h = { 'Content-Type': 'application/json' };
+        if (key) {
+            if (style === 'x-api-key') h['x-api-key'] = key;
+            else if (style === 'api-key') h['api-key'] = key;
+            else if (style !== 'none') h['Authorization'] = 'Bearer ' + key;
+        }
+        gptApiState('拉取模型中…');
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: ownApiUrl(base, 'modelsPath'),
+            headers: h,
+            timeout: 20000,
+            onload: function (xhr) {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    var list = [];
+                    try { list = JSON.parse(xhr.responseText).data || []; } catch (_) { }
+                    var ids = [];
+                    if (Object.prototype.toString.call(list) === '[object Array]') {
+                        ids = list.map(function (m) { return m && m.id ? m.id : m; }).filter(function (x) { return typeof x === "string" && x; });
+                    }
+                    if (ids.length) {
+                        gptApplyModels(ids);
+                        gptApiState('✅ 拉取到 ' + ids.length + ' 个模型', 'green');
+                        try { logger('已拉取模型：' + ids.slice(0, 6).join(', ') + (ids.length > 6 ? ' …' : ''), 'green'); } catch (_) { }
+                    } else {
+                        gptApiState('⚠ 服务没返回模型列表', 'red');
+                        try { logger('该地址的 /models 没有模型列表，请手动填写模型名', 'orange'); } catch (_) { }
+                    }
+                } else if (xhr.status === 401 || xhr.status === 403) {
+                    gptApiState('❌ 鉴权失败 ' + xhr.status, 'red');
+                } else {
+                    gptApiState('❌ HTTP ' + xhr.status, 'red');
+                }
+            },
+            onerror: function () { gptApiState('❌ 无法连接', 'red'); },
+            ontimeout: function () { gptApiState('❌ 拉取超时', 'red'); }
+        });
+    } catch (_) {
+        try { gptApiState('❌ 拉取失败', 'red'); } catch (_) { }
+    }
+}
 function gptApplyModels(ids) {
     try {
         if (Object.prototype.toString.call(ids) !== "[object Array]" || !ids.length) return;
@@ -1890,7 +1937,9 @@ function showBox() {
             #ne-21box #modelSelect:hover{background:rgba(255,255,255,.7);}
             #ne-21box #modelSelect:focus{background:rgba(255,255,255,.75);box-shadow:0 0 0 1px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.85),0 0 0 4px rgba(15,23,42,.1);}
             #ne-21box .ne21-select{padding:5px 8px;font-size:12px;border-radius:10px;border:1px solid rgba(255,255,255,.65);background:rgba(255,255,255,.5);color:rgba(15,23,42,.86);cursor:pointer;outline:none;min-width:80px;flex-shrink:0;box-shadow:0 0 0 1px rgba(15,23,42,.05),inset 0 1px 0 rgba(255,255,255,.75);transition:background .2s,box-shadow .2s;}
-            #ne-21box .ne21-select:hover{background:rgba(255,255,255,.7);}
+            #ne-21box input, #ne-21box select, #ne-21box textarea{box-sizing:border-box;}
+#ne-21box .ne21-row > .ne21-select{min-width:0;flex:1 1 auto;}
+#ne-21box .ne21-select:hover{background:rgba(255,255,255,.7);}
             #ne-21box .ne21-select:focus{background:rgba(255,255,255,.72);box-shadow:0 0 0 1px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.82),0 0 0 3px rgba(15,23,42,.06);}
             #ne-21box #userInfo{margin:10px 0 0;padding:10px 12px;background:rgba(255,255,255,.5);border:1px solid rgba(255,255,255,.7);border-radius:12px;box-shadow:0 0 0 1px rgba(15,23,42,.05),inset 0 1px 0 rgba(255,255,255,.75);font-size:12px;color:rgba(15,23,42,.66);line-height:1.6;overflow:hidden;}
             #ne-21box #userInfo:empty{display:none!important;}
@@ -2199,12 +2248,8 @@ function showBox() {
     } else {
         $('#ne-21log', getPanelDocument()).html('')
     }
-    let _u = [getCk('_uid'), getCk('UID')].find(value => /^\d+$/.test(value || '') && Number(value) > 0 && Number(value) <= 2147483647) || '';
-
     $('#ne-21notice').html(`
-        <div class="ne21-uid${_u ? '' : ' ne21-uid-missing'}">${_u ? '学习通账号 UID：<b>' + _u + '</b>' : '<b>未获取到学习通 UID</b><span>仍可点击充值前往充值页，页内有客服联系方式。</span>'}</div>
         <div class="ne21-row">
-            <button id="ne21RechargeBtn" class="ne21-btn ne21-btn-primary" onclick="window.open('${_host}${_u ? '?uid=' + _u : ''}', '_blank', 'noopener,noreferrer')" title="前往充值页，可联系客服">充值</button>
             <select id="modelSelect">
                 <option value="GPT-3.5">GPT-4.1 (普通｜低价)</option>
                 <option value="ERNIE-Bot-4.0">GPT-5 (最新)</option>
@@ -2262,7 +2307,7 @@ function showBox() {
             + '</div>'
             + '<input id="ne21ApiBase" class="ne21-select" style="width:100%;margin-bottom:6px;" placeholder="https://api.deepseek.com/v1" spellcheck="false">'
             + '<input id="ne21ApiKey" class="ne21-select" type="password" style="width:100%;margin-bottom:6px;" placeholder="sk-..." spellcheck="false">'
-            + '<select id="ne21ApiModelSel" class="ne21-select" style="width:100%;margin-bottom:6px;"></select><input id="ne21ApiModel" class="ne21-select" style="width:100%;margin-bottom:8px;display:none;" placeholder="自定义模型名" spellcheck="false">'
+            + '<div style="display:flex;gap:8px;margin-bottom:6px;"><select id="ne21ApiModelSel" class="ne21-select" style="flex:1 1 auto;min-width:0;"></select><button id="ne21ApiFetch" type="button" class="ne21-btn ne21-btn-secondary" style="flex:0 0 auto;">拉取</button></div><input id="ne21ApiModel" class="ne21-select" style="width:100%;margin-bottom:8px;display:none;" placeholder="自定义模型名" spellcheck="false">'
             + '<select id="ne21ApiAuth" class="ne21-select" style="width:100%;margin-bottom:8px;">'
             + '<option value="bearer">Bearer（默认）</option>'
             + '<option value="x-api-key">x-api-key</option>'
@@ -2291,6 +2336,14 @@ function showBox() {
                     ? OWN_API.availableModels
                     : ((Object.prototype.toString.call(OWN_API.models) === '[object Array]' && OWN_API.models.length) ? OWN_API.models : (OWN_API.model ? [OWN_API.model] : []));
                 gptFillModelSelect(_initModels, OWN_API.model);
+                $('#ne21ApiBase, #ne21ApiKey, #ne21ApiModel, #ne21ApiModelSel, #ne21ApiAuth').on('input.gptDirty change.gptDirty', function () {
+                    try { if (String($('#ne21ApiState').text() || '').indexOf('正在测试') === -1) gptApiState('有未保存的修改'); } catch (_) { }
+                });
+                $('#ne21ApiFetch').on('click.gptFetch', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    gptPullModels();
+                });
             } catch (_) { }
 
             $('#ne21ApiModelSel').on('change.gptModelSel', function () {
