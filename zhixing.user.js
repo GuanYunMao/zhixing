@@ -3,7 +3,7 @@
 // @namespace           zhixing.local
 // @downloadURL      https://cdn.jsdelivr.net/gh/GuanYunMao/zhixing@main/zhixing.user.js
 // @updateURL        https://cdn.jsdelivr.net/gh/GuanYunMao/zhixing@main/zhixing.user.js
-// @version             3.20.1
+// @version             3.21.0
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -146,6 +146,7 @@ var setting = {
     redo: 0,
 
     examTurn: 0,
+    previewTurn: 1,
     examTurnTime: 0,
     goodStudent: 1,
     alterTitle: 1,
@@ -1205,6 +1206,10 @@ function parseUrlParams() {
 
 function updateLocalStorage(event) {
     var checkbox = event.target;
+    if (checkbox.id === 'ZhixingSetting.goodStudent') {
+        localStorage.setItem(checkbox.id, !checkbox.checked);
+        return;
+    }
     localStorage.setItem(checkbox.id, checkbox.checked);
 }
 
@@ -1882,6 +1887,8 @@ function showBox() {
             #ne-21box #moreSettings{padding:4px 14px;background:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.65);border-radius:14px;box-shadow:0 0 0 1px rgba(15,23,42,.05),inset 0 1px 0 rgba(255,255,255,.7);margin:10px 0 0;}
             #ne-21box #moreSettings label{display:flex;flex-direction:row-reverse;align-items:center;justify-content:space-between;margin:0;padding:8px 2px;font-size:12px;color:rgba(15,23,42,.78);cursor:pointer;user-select:none;line-height:1.4;}
             #ne-21box #moreSettings label + label{border-top:1px dashed rgba(15,23,42,.1);}
+#ne-21box #moreSettings .ne21-group{display:flex;align-items:center;gap:8px;margin:10px 0 2px;font-size:11px;color:rgba(15,23,42,.42);letter-spacing:.4px;}
+#ne-21box #moreSettings .ne21-group::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(148,163,184,.35),transparent);}
             #ne-21box #moreSettings input[type=checkbox]{appearance:none;-webkit-appearance:none;width:34px;height:20px;border:1px solid rgba(15,23,42,.08);border-radius:20px;cursor:pointer;position:relative;transition:background .25s,box-shadow .25s;background:rgba(15,23,42,.16);box-shadow:inset 0 1px 2px rgba(15,23,42,.12);margin:0 0 0 10px;flex-shrink:0;}
             #ne-21box #moreSettings input[type=checkbox]::before{content:'';position:absolute;top:1px;left:1px;width:16px;height:16px;border-radius:50%;background:linear-gradient(180deg,rgba(255,255,255,1),rgba(255,255,255,.85));box-shadow:0 1px 3px rgba(15,23,42,.25),inset 0 1px 0 rgba(255,255,255,1);transition:transform .25s cubic-bezier(.2,.9,.3,1);}
             #ne-21box #moreSettings input[type=checkbox]:hover{background:rgba(15,23,42,.24);}
@@ -1940,15 +1947,17 @@ function showBox() {
                         <label title="题目作答间隔与 AI 搜题节流间隔（秒），默认 2.5 秒">
                             <input type="number" id="ZhixingSetting.time" class="ne21-select" min="0" max="60" step="0.5" style="min-width:56px;width:56px;padding:5px 8px;">答题间隔 (秒)
                         </label>
-                        <p></p>
-                        <label><input type="checkbox" id="ZhixingSetting.sub">测验自动提交</label>
-                        <label><input type="checkbox" id="ZhixingSetting.force">测验强制提交</label>
-                        <label><input type="checkbox" id="ZhixingSetting.examTurn">考试自动跳转</label>
-                        <p></p>
-                        <label><input type="checkbox" id="ZhixingSetting.goodStudent">答案加粗不选择</label>
-                        <label><input type="checkbox" id="ZhixingSetting.alterTitle" checked>答案插入题目后</label>
-                        <p></p>
-                        <label><input type="checkbox" id="ZhixingSetting.redo">覆盖已答题（不勾则跳过已答）</label>
+                        <div class="ne21-group">随堂练习</div>
+                        <label title="随堂练习答完后自动点提交"><input type="checkbox" id="ZhixingSetting.sub">自动交卷</label>
+                        <label title="有没答出的题时也提交"><input type="checkbox" id="ZhixingSetting.force">漏题交卷</label>
+                        <label title="勾选＝真的点选选项；不勾＝只把正确项加粗"><input type="checkbox" id="ZhixingSetting.goodStudent">自动选择</label>
+                        <label title="在题目下方写一行「答案：…」"><input type="checkbox" id="ZhixingSetting.alterTitle">答案附注</label>
+                        <div class="ne21-group">考试</div>
+                        <label title="正式考试答完自动点下一题（不含整卷预览）"><input type="checkbox" id="ZhixingSetting.examTurn">考试跳题</label>
+                        <div class="ne21-group">整卷预览</div>
+                        <label title="整卷预览答完自动下一题"><input type="checkbox" id="ZhixingSetting.previewTurn">预览跳题</label>
+                        <div class="ne21-group">重做</div>
+                        <label title="勾选后，从头扫描时连已答的题一起重做"><input type="checkbox" id="ZhixingSetting.redo">覆盖已答题</label>
                     </div>
                     <div id="ne-21thinking">
                         <div class="ne21-thinking-spinner"></div>
@@ -2135,14 +2144,19 @@ function showBox() {
             if (localStorage.getItem('ZhixingSetting.safeDefaultV1') !== 'true') {
                 localStorage.setItem('ZhixingSetting.sub', 'false');
                 localStorage.setItem('ZhixingSetting.safeDefaultV1', 'true');
-                try { console.warn('[知行] 安全起见已把「测验自动提交」默认关闭，需要时在设置里手动打开'); } catch (_) { }
+                try { console.warn('[知行] 安全起见已把「自动交卷」默认关闭，需要时在设置里手动打开'); } catch (_) { }
             }
 
-            ['sub', 'force', 'examTurn', 'goodStudent', 'alterTitle', 'redo', 'fuzzyMatch'].forEach(function (settingId) {
+            ['sub', 'force', 'examTurn', 'previewTurn', 'goodStudent', 'alterTitle', 'redo', 'fuzzyMatch'].forEach(function (settingId) {
                 var checkbox = document.getElementById('ZhixingSetting.' + settingId);
                 if (!checkbox) return;
                 checkbox.addEventListener('change', updateLocalStorage);
-                checkbox.checked = localStorage.getItem('ZhixingSetting.' + settingId) === 'true';
+                var _sv = localStorage.getItem('ZhixingSetting.' + settingId);
+                if (settingId === 'goodStudent') {
+                    checkbox.checked = _sv === null ? !setting.goodStudent : _sv !== 'true';
+                } else {
+                    checkbox.checked = _sv === null ? !!setting[settingId] : _sv === 'true';
+                }
             });
 
             var rateSelect = document.getElementById('ZhixingSetting.rate');
@@ -2412,7 +2426,12 @@ function logger(str, color) {
     var _time = new Date().toLocaleTimeString()
     var c = (_ne21LogColorMap || {})[color] || color || '#334155'
     var $p = $('<p><span class="ne21-time">[' + _time + ']</span><span class="ne21-msg" style="color:' + c + ';">' + str + '</span></p>')
-    $('#ne-21log', getPanelDocument()).prepend($p)
+    var $log = $('#ne-21log', getPanelDocument())
+    var _el = $log.length ? $log[0] : null
+    var _stick = true
+    if (_el) _stick = (_el.scrollHeight - _el.scrollTop - _el.clientHeight) < 32
+    $log.append($p)
+    if (_el && _stick) { try { _el.scrollTop = _el.scrollHeight } catch (_) { } }
     return $p
 }
 
@@ -5434,10 +5453,16 @@ function doExamPreview(index, TiMuList) {
     let alreadyAnswered = 0
     let prefix = '第' + (index + 1) + '题: '
 
+    function isPreviewTurnOn() {
+        var _pv = localStorage.getItem('ZhixingSetting.previewTurn')
+        return _pv === null ? !!setting.previewTurn : _pv === 'true'
+    }
     function nextSoon() {
+        if (!isPreviewTurnOn()) { logger(prefix + '已暂停自动下一题（预览跳题已关闭）', 'blue'); return }
         setTimeout(function () { doExamPreview(index + 1, TiMuList) }, getExamPreviewDelay())
     }
     function nextFast() {
+        if (!isPreviewTurnOn()) { logger(prefix + '已暂停自动下一题（预览跳题已关闭）', 'blue'); return }
         setTimeout(function () { doExamPreview(index + 1, TiMuList) }, 30)
     }
 
