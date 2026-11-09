@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name                知行 · 网课助手（私人 4.2.4）（轻量版）
+// @name                知行 · 网课助手（私人 4.2.7 侧栏版）（轻量版）
 // @namespace           zhixing.local
 // @downloadURL         https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
 // @updateURL           https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
-// @version             4.2.4-lite
+// @version             4.2.7-lite
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -245,6 +245,10 @@ var localStorage = {
     }
 };
 
+function zxExtMode() {
+    try { return document.documentElement.getAttribute('data-zx-ext') === '1'; } catch (_) { return false; }
+}
+
 var _w = unsafeWindow,
     _l = location,
     _d = _w.document,
@@ -272,11 +276,12 @@ var _host = _cachedHost || HOST_CANDIDATES[0] || '';
  *    GM_setValue("OWN_API_CONFIG", { baseUrl: "...", apiKey: "...", model: "..." })
  *  或
  *    localStorage.setItem("OWN_API_CONFIG", JSON.stringify({ baseUrl: "...", apiKey: "...", model: "..." }))
+ *  注意：localStorage 覆盖必须显式包含 apiKey，避免页面只改 baseUrl 就复用 GM 里保存的密钥。
  * ========================================================================== */
 var OWN_API = {
     enabled: true,
     baseUrl: '',   // 填到 /v1 为止，脚本会自动拼 /chat/completions
-    apiKey: 'sk-REPLACE_ME',   // 你的密钥；本地 Ollama 之类的空密钥直接留空字符串
+    apiKey: 'sk-REPLACE_ME',   // 你的密钥；本地 Ollama 这类无鉴权接口把 authStyle 设为 none 后可留空
     model: '',                // 你的模型名
     models: [],  // 面板下拉可切换的模型
     /* ---- 服务商差异（一般不用改） ---- */
@@ -287,12 +292,11 @@ var OWN_API = {
     extraHeaders: {},           // 额外请求头，如 { "X-Custom": "1" }
     maxTokens: 0,               // 0 = 不传；推理模型千万别设小
     vision: 'auto',             // 'auto' 按 /models 的 input_modalities 决定；true 强制发图；false 不发
-    maxImages: 5,               // 单题最多附几张图（题干 + 各选项公式图都要算）
-    effort: 'low',              // 思考强度：low（快、省）/ high / max / off（最快但易错）
+    maxImages: 24,              // 单题最多附几张图（题干 + 各选项公式图都要算）
+    effort: 'low',              // 思考强度：low（快、省）/ high / max
     baseUrls: [],               // 备用地址，前一个失败时自动轮转
-    temperature: 0.2,
     timeoutMs: 120000,
-    systemPrompt: '你是严谨的答题助手。用户会给你一段 JSON，包含 type(题型)、question(题干)、options(选项，可能没有)、answer_format(作答格式要求)。\n只输出最终答案，不要解释、不要加引号、不要输出“答案：”前缀。\n严格按下列规则输出：\n1) 单选题：从 options 中原样选出一个选项文字，不要带 A./B. 之类的序号，不要改动标点。\n2) 多选题：原样输出所有正确选项文字，用 | 分隔。\n3) 判断题：只输出 正确 或 错误。\n4) 填空题：多个空的答案用 | 分隔并按顺序输出。\n5) 简答题：不超过 50 字。'
+    systemPrompt: '你是严谨的答题助手。用户会给你一段 JSON，包含 type(题型)、question(题干)、options(选项，可能没有)、answer_format(作答格式要求)。\n只输出最终答案，不要解释、不要加引号、不要输出“答案：”前缀。\n严格按下列规则输出：\n1) 单选题：只输出正确选项的字母（如 B），不要输出选项文字，不要带 A./B. 之类的序号。\n2) 多选题：只输出所有正确选项的字母，用 | 分隔（如 A|C）。\n3) 判断题：只输出 正确 或 错误。\n4) 填空题：多个空的答案用 | 分隔并按顺序输出。\n5) 简答题：不超过 50 字。'
 };
 
 try {
@@ -305,7 +309,12 @@ try {
     var _ownApiLs = window.localStorage.getItem('OWN_API_CONFIG');
     if (_ownApiLs) {
         var _ownApiObj = JSON.parse(_ownApiLs);
-        for (var _ok2 in _ownApiObj) OWN_API[_ok2] = _ownApiObj[_ok2];
+        // 页面 localStorage 的覆盖必须自带 apiKey，禁止“只改 baseUrl、复用 GM 里已存密钥”的劫持路径。
+        if (_ownApiObj && typeof _ownApiObj === 'object' && Object.prototype.hasOwnProperty.call(_ownApiObj, 'apiKey')) {
+            for (var _ok2 in _ownApiObj) OWN_API[_ok2] = _ownApiObj[_ok2];
+        } else {
+            try { console.warn('[知行] 已忽略页面 localStorage 的 OWN_API_CONFIG：覆盖配置必须显式包含 apiKey'); } catch (_) { }
+        }
     }
 } catch (e) { }
 
@@ -317,6 +326,31 @@ function ownApiParsePayload(payloadStr) {
     return { question: String(payloadStr == null ? "" : payloadStr) };
 }
 
+function ownApiPlainText(v) {
+    return String(v == null ? "" : v)
+        .replace(/<img\b[^>]*>/gi, " ")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;|&apos;/gi, "'")
+        .replace(/&amp;/gi, "&")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+function ownApiNormChoice(v) {
+    return ownApiPlainText(v)
+        .replace(/^[（(]\s*[A-Ha-h]\s*[)）]\s*/, "")
+        .replace(/^[A-Ha-h]\s*[.、,．:：)）]\s*/, "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+}
+function ownApiAnswerOptions(p) {
+    var arr = p && p.options;
+    if (Object.prototype.toString.call(arr) === "[object Array]") return arr.map(ownApiPlainText);
+    return [];
+}
 function ownApiCleanAnswer(text, payloadStr) {
     var s = String(text == null ? "" : text).trim();
     if (!s) return "";
@@ -326,25 +360,78 @@ function ownApiCleanAnswer(text, payloadStr) {
     s = s.replace(/^["\u201c\u2018]+|["\u201d\u2019]+$/g, "").trim();
     var p = ownApiParsePayload(payloadStr);
     var type = String(p.type == null ? "" : p.type);
-    if (type.indexOf("单选") !== -1 || type.indexOf("多选") !== -1 || type.indexOf("判断") !== -1) {
-        var parts = s.split(/\s*[|｜]\s*/);
-        var cleaned = [];
-        for (var i = 0; i < parts.length; i++) {
-            var x = parts[i].trim();
-            if (!x) continue;
-            x = x.replace(/^[（(]\s*[A-Ha-h]\s*[)）]\s*/, "");
-            x = x.replace(/^[A-Ha-h]\s*[.、,．:：)）]\s*/, "");
-            cleaned.push(x.trim());
+    var opts = ownApiAnswerOptions(p);
+    var isChoice = type.indexOf("单选") !== -1 || type.indexOf("多选") !== -1 || type.indexOf("选择") !== -1;
+    var isJudge = type.indexOf("判断") !== -1;
+
+    if (isJudge) {
+        // 判断题：文本归一；模型给 A/B 时按选项文字回填，避免下游把字母当判断题答案。
+        var judgeText = s.replace(/[\s。，.,!！、;；:：]+/g, "");
+        if (/^(对|正确|是|√|t|true|yes|ri|right)$/i.test(judgeText)) return "正确";
+        if (/^(错|错误|否|×|x|f|false|no|wr|wrong)$/i.test(judgeText)) return "错误";
+        var judgeLetter = judgeText.match(/^([A-H])$/);
+        if (judgeLetter && opts.length) {
+            var judgeIndex = judgeLetter[1].charCodeAt(0) - 65;
+            if (judgeIndex >= 0 && judgeIndex < opts.length) return opts[judgeIndex];
         }
-        if (cleaned.length) s = cleaned.join("|");
+        return s.replace(/[。；]\s*$/, "").trim();
     }
-    if (type.indexOf("判断") !== -1) {
-        var j = s.replace(/[\s。，.,!！]/g, "");
-        if (/^(对|正确|是|√|t|true|yes|ri|right)$/i.test(j)) s = "正确";
-        else if (/^(错|错误|否|×|x|f|false|no|wr|wrong)$/i.test(j)) s = "错误";
+
+    if (isChoice) {
+        // 1) 纯字母答案：A / A|C / A、C / AC。统一成 A|C，后面对齐只认字母。
+        var compact = s.replace(/[\s,，、;；|｜/.。:：()（）]+/g, "").toUpperCase();
+        if (/^[A-H]+$/.test(compact) && opts.length && compact.split("").every(function (ch) {
+            return ch.charCodeAt(0) - 65 < opts.length;
+        })) {
+            var letters = Array.from(new Set(compact.split("")));
+            if (type.indexOf("单选") !== -1) letters = letters.slice(0, 1);
+            return letters.join("|");
+        }
+        // 去掉 “A.” / “(A)” 这类前缀，但只在文本答案里做，纯字母已经在上面处理。
+        var cleanedText = s
+            .replace(/^[（(]\s*[A-Ha-h]\s*[)）]\s*/, "")
+            .replace(/^[A-Ha-h]\s*[.、,．:：)）]\s*/, "")
+            .trim();
+        // 2) 整段等于某个选项：`|z|` 这类带竖线的选项在这里被完整保留成字母。
+        var normS = ownApiNormChoice(cleanedText);
+        var picked = [];
+        if (normS) {
+            for (var i = 0; i < opts.length; i++) {
+                if (ownApiNormChoice(opts[i]) === normS) picked.push(String.fromCharCode(65 + i));
+            }
+        }
+        // 3) 多选文本：按 | 拆，只有每一段都对得上选项时才采用。
+        if (!picked.length && type.indexOf("多选") !== -1 && opts.length) {
+            var parts = cleanedText.split(/\s*[|｜]\s*/).map(function (x) { return x.trim(); }).filter(Boolean);
+            if (parts.length > 1) {
+                var mapped = [];
+                var allMatched = true;
+                for (var pi = 0; pi < parts.length; pi++) {
+                    var hit = -1;
+                    var partNorm = ownApiNormChoice(parts[pi]);
+                    for (var oi = 0; oi < opts.length; oi++) {
+                        if (partNorm && ownApiNormChoice(opts[oi]) === partNorm) { hit = oi; break; }
+                    }
+                    if (hit < 0) { allMatched = false; break; }
+                    mapped.push(hit);
+                }
+                if (allMatched) picked = Array.from(new Set(mapped)).map(function (x) { return String.fromCharCode(65 + x); });
+            }
+        }
+        // 4) 多选文本兜底：选项文字作为整段出现在答案里（能处理 |z| 这种被 | 夹住的选项）。
+        if (!picked.length && type.indexOf("多选") !== -1 && opts.length && normS) {
+            for (var mi = 0; mi < opts.length; mi++) {
+                var optNorm = ownApiNormChoice(opts[mi]);
+                if (optNorm && normS.indexOf(optNorm) !== -1) picked.push(String.fromCharCode(65 + mi));
+            }
+        }
+        if (picked.length) return Array.from(new Set(picked)).sort().join("|");
+        // 5) 对不上选项时保留原文；单选/判断绝不能再按 | 拆。
+        return cleanedText.replace(/[。；]\s*$/, "").trim();
     }
-    s = s.replace(/[。；]\s*$/, "").trim();
-    return s;
+
+    // 填空/简答：保留原文清洗，不在这里拆 |（答案本身可能含竖线）。
+    return s.replace(/[。；]\s*$/, "").trim();
 }
 
 function ownApiTrim(u) {
@@ -419,14 +506,20 @@ var zx420 = (function () {
     'use strict';
     const DB_NAME = 'zhixing-review-420';
     const STORE = 'results';
-    const MAX_IMAGES = 16;
+    const MAX_IMAGES = 24;
     const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
     const MAX_TOTAL_BYTES = 18 * 1024 * 1024;
+    const MEDIA_MISSING = "zx425:missing-image-source";
     let busy = false;
     let stopRequested = false;
     let currentCount = 0;
     let currentTotal = 0;
+    let reviewPaused = false;
     let dbPromise = null;
+    let activeExamKey = '';
+    let reviewFilter = 'all';
+    let reviewSearch = '';
+
 
     function decodeEntities(s) {
         return String(s || '')
@@ -487,7 +580,8 @@ var zx420 = (function () {
         root.querySelectorAll('script:not([type*="math/tex"]),style,iframe,audio,video').forEach(n => n.remove());
         root.querySelectorAll('annotation[encoding],script[type*="math/tex"]').forEach(n => {
             const latex = document.createTextNode(' \\( ' + (n.textContent || '').trim() + ' \\) ');
-            if (n.parentNode) n.parentNode.insertBefore(latex, n);
+            // 插入文本后必须删掉原节点，否则 root.textContent 会把脚本/注释正文再拼一遍。
+            if (n.parentNode) { n.parentNode.insertBefore(latex, n); n.remove(); }
         });
         root.querySelectorAll('svg title').forEach(n => {
             if (n.textContent) n.parentNode.insertAdjacentText('beforebegin', ' ' + n.textContent + ' ');
@@ -499,9 +593,35 @@ var zx420 = (function () {
         return normalizeText(root.textContent || '');
     }
 
+    // 把原节点上浏览器计算出的 currentSrc、canvas 像素复制到克隆节点，题干和选项共用。
+    function copyRichMedia(node, clone) {
+        const originalImages = node.querySelectorAll('img');
+        const clonedImages = clone.querySelectorAll('img');
+        originalImages.forEach(function (img, i) {
+            const target = clonedImages[i];
+            if (!target) return;
+            const resolved = img.currentSrc || img.getAttribute('data-original') || img.getAttribute('data-src') || '';
+            if (resolved && !/^(?:data:|javascript:)(?!image\/)/i.test(resolved)) target.setAttribute('data-zx425-source', resolved);
+        });
+        const originalCanvases = node.querySelectorAll('canvas');
+        const clonedCanvases = clone.querySelectorAll('canvas');
+        originalCanvases.forEach(function (canvas, i) {
+            try {
+                const image = document.createElement('img');
+                image.setAttribute('data-zx425-source', canvas.toDataURL('image/png'));
+                image.alt = '网页公式或图形画布';
+                clonedCanvases[i] && clonedCanvases[i].replaceWith(image);
+            } catch (_) {
+                if (clonedCanvases[i]) clonedCanvases[i].outerHTML = '<img data-zx425-missing="canvas" alt="无法读取的网页画布">';
+            }
+        });
+        return clone;
+    }
+
     function fromNodeHtml(node) {
         if (!node) return '';
         const clone = node.cloneNode(true);
+        copyRichMedia(node, clone);
         clone.querySelectorAll('input,button,textarea,select').forEach(n => n.remove());
         // 移除选项标签，避免丢失正文中实际包含的 A/B/C/D 字符。
         clone.querySelectorAll('.choiceLetter,.option-index,.option-index-label,.num').forEach(n => {
@@ -516,8 +636,16 @@ var zx420 = (function () {
     }
 
     function pageQuestionHtml(node) {
-        const root = node && node.querySelector('.mark_name, h3.mark_name, .Py-m1-title, .question-name, .Zy_TItle');
-        return root ? (root.innerHTML || '') : '';
+        if (!node) return '';
+        const root = node.querySelector('.mark_name, h3.mark_name, .Py-m1-title, .question-name, .Zy_TItle');
+        if (!root) return '';
+        const clone = root.cloneNode(true);
+        // 先复制 currentSrc/canvas，再剔选项列表，避免 index 错位后丢图。
+        copyRichMedia(root, clone);
+        // 题干容器偶尔把选项列表也包进来，先剔掉，避免题干里混进 A/B/C/D 的正文。
+        clone.querySelectorAll('.answerList, .stem_answer, .answerBg, .reader_answer_tit, .Zy_ulTop, .optionList').forEach(n => n.remove());
+        clone.querySelectorAll('input,button,textarea,select').forEach(n => n.remove());
+        return clone.innerHTML || '';
     }
 
     function isChosen(node) {
@@ -580,17 +708,82 @@ var zx420 = (function () {
         const root = document.createElement('div');
         root.innerHTML = String(markup || '');
         const out = [];
-        root.querySelectorAll('img').forEach(el => {
-            const u = el.getAttribute('data-original') || el.getAttribute('data-src') || el.getAttribute('data-lazy-src') || el.getAttribute('src') || '';
-            if (u && !/^javascript:/i.test(u)) out.push(u);
+        const add = function (src) {
+            let u = String(src || '').trim();
+            if (/^javascript:/i.test(u)) u = '';
+            out.push(u || MEDIA_MISSING);
+        };
+        root.querySelectorAll('img, picture source').forEach(function (el) {
+            const srcset = el.getAttribute('srcset') || el.getAttribute('data-srcset') || '';
+            const firstSrcset = srcset.split(',').map(s=>s.trim().split(/\s+/)[0]).find(Boolean) || '';
+            add(el.getAttribute('data-zx425-source') || el.getAttribute('data-original') ||
+                el.getAttribute('data-src') || el.getAttribute('data-lazy-src') ||
+                el.getAttribute('data-actualsrc') || el.getAttribute('data-echo') ||
+                el.getAttribute('data-url') || el.getAttribute('data-original-src') ||
+                el.getAttribute('data-lazyload') || firstSrcset || el.getAttribute('src'));
+        });
+        root.querySelectorAll('[style*="background"]').forEach(function (el) {
+            const background = el.getAttribute('style') || '';
+            for (const match of background.matchAll(/(?:background(?:-image)?)\s*:[^;]*?url\(\s*["']?([^"')]+)["']?\s*\)/gi)) add(match[1]);
         });
         return out;
+    }
+
+    // MathJax / KaTeX 的 SVG 公式在 textContent 里是空的，序列化后转 PNG 一起发给模型。
+    function collectFormulaSvgs(markup) {
+        const root = document.createElement('div');
+        root.innerHTML = String(markup || '');
+        const out = [];
+        root.querySelectorAll('mjx-container svg, .MathJax svg, .katex svg, svg[data-mml-node], svg.mjx-svg').forEach(function (svg) {
+            try {
+                if (svg.outerHTML) out.push(svg.outerHTML);
+            } catch (_) { }
+        });
+        return out;
+    }
+    function svgToPngDataUrl(svgHtml) {
+        return new Promise(function (resolve, reject) {
+            let url = '';
+            try {
+                let s = String(svgHtml || '');
+                if (!/xmlns=/.test(s)) s = s.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                const blob = new Blob([s], { type: 'image/svg+xml;charset=utf-8' });
+                url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = function () {
+                    try {
+                        const w = Math.max(1, img.naturalWidth || 240);
+                        const h = Math.max(1, img.naturalHeight || 48);
+                        const scale = Math.min(3, Math.max(1, 900 / Math.max(w, h)));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.ceil(w * scale);
+                        canvas.height = Math.ceil(h * scale);
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        if (url) URL.revokeObjectURL(url);
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch (e) {
+                        if (url) URL.revokeObjectURL(url);
+                        reject(e);
+                    }
+                };
+                img.onerror = function () { if (url) URL.revokeObjectURL(url); reject(new Error('SVG 渲染失败')); };
+                img.src = url;
+            } catch (e) {
+                if (url) URL.revokeObjectURL(url);
+                reject(e);
+            }
+        });
     }
 
     function readBlob(blob) {
         return new Promise((resolve, reject) => {
             if (!blob || !blob.size) return reject(new Error('空图片'));
             if (blob.size > MAX_IMAGE_BYTES) return reject(new Error('图片大于 8MB'));
+            // <picture><source> 之外的音视频资源不应被当作图片塞进 image_url。
+            if (blob.type && /^(video|audio)\//i.test(blob.type)) return reject(new Error('不是图片：' + blob.type));
             const fr = new FileReader();
             fr.onload = () => resolve(String(fr.result || ''));
             fr.onerror = () => reject(new Error('图片读取失败'));
@@ -600,12 +793,13 @@ var zx420 = (function () {
 
     function imageDataUrl(src) {
         const url = String(src || '').trim();
-        if (!url) return Promise.reject(new Error('图片地址为空'));
+        if (!url || url === MEDIA_MISSING) return Promise.reject(new Error('图片元素无可读取地址（可能是未完成懒加载/跨域画布）'));
         if (/^data:image\/(png|jpeg|webp|gif);base64,/i.test(url)) {
             if (url.length > MAX_IMAGE_BYTES * 1.4) return Promise.reject(new Error('内联图片太大'));
             return Promise.resolve(url);
         }
         const abs = new URL(url, location.href).href;
+        if(!/^(https?:|blob:)/i.test(abs))return Promise.reject(new Error('图片地址协议不支持'));
         // blob: 对同一浏览器环境有效，先试浏览器原生 fetch。
         if (abs.indexOf('blob:') === 0) {
             return fetch(abs).then(r => { if (!r.ok) throw new Error('blob 图片读取失败'); return r.blob(); }).then(readBlob);
@@ -627,32 +821,78 @@ var zx420 = (function () {
         });
     }
 
+    function mediaLabel(src) {
+        const s = String(src || '');
+        if (s.startsWith('data:')) return 'data:image (embedded)';
+        try { const u = new URL(s, location.href); return u.origin + u.pathname; }
+        catch (_) { return s.slice(0,160); }
+    }
+    function imagePreview(data) {
+        return new Promise(function (resolve) {
+            try {
+                const image = new Image();
+                image.onload = function () {
+                    try {
+                        const scale = Math.min(1, 280 / Math.max(1,image.naturalWidth,image.naturalHeight));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1,Math.round(image.naturalWidth*scale));
+                        canvas.height = Math.max(1,Math.round(image.naturalHeight*scale));
+                        canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+                        resolve(canvas.toDataURL('image/webp',0.65));
+                    } catch(_) { resolve(data.length < 120000 ? data : ''); }
+                };
+                image.onerror = function () { resolve(data.length < 120000 ? data : ''); };
+                image.src = data;
+            } catch (_) { resolve(data.length < 120000 ? data : ''); }
+        });
+    }
+
     async function prepareMessages(q, useImages) {
         const options = Array.isArray(q.options) ? q.options : [];
+        const maxImages = Math.max(1, Math.min(48, Number(OWN_API.maxImages) || MAX_IMAGES));
         const parts = [];
         let count = 0;
         let totalBytes = 0;
         let hadImageRefs = 0;
         const skipped = [];
+        const media = [];
+        let seq = 0;
         async function addBlock(title, html) {
             const text = cleanText(html);
             parts.push({ type: 'text', text: title + ': ' + (text || '（未提取到文字，可能是公式或图片；若有附图请看图作答）') });
             const sources = collectImageSources(html);
-            if (!sources.length) return;
-            hadImageRefs += sources.length;
-            // 未启用读图时只跳过图片，文字照常发送，不能整题失败。
-            if (!useImages) { skipped.push(title + ' 有 ' + sources.length + ' 张图未发送'); return; }
+            const formulaSvgs = collectFormulaSvgs(html);
+            if (!sources.length && !formulaSvgs.length) return;
+            hadImageRefs += sources.length + formulaSvgs.length;
+            // 未启用读图时跳过图片，文字照常发送；这不是“缺图”，不能整题判死。
+            if (!useImages) { skipped.push(title + ' 有 ' + (sources.length + formulaSvgs.length) + ' 处图/公式未发送'); return; }
             for (const url of sources) {
-                if (count + 1 > MAX_IMAGES) { skipped.push('图片超过每题 ' + MAX_IMAGES + ' 张上限'); break; }
+                seq++;
+                if (count + 1 > maxImages) { skipped.push('图片超过每题 ' + maxImages + ' 张上限'); break; }
                 try {
                     const data = await imageDataUrl(url);
                     if (totalBytes + data.length > MAX_TOTAL_BYTES) { skipped.push('图片总大小超过上限'); break; }
                     totalBytes += data.length;
                     count++;
                     parts.push({ type: 'image_url', image_url: { url: data } });
+                    media.push({owner:title,sequence:seq,kind:'image',source:mediaLabel(url),bytes:data.length,preview:await imagePreview(data)});
                 } catch (e) {
                     // 单张图读不到就跳过，剩下的文字和图片继续发，不让整题死掉。
                     skipped.push('图片读取失败：' + (e && e.message ? e.message : e));
+                }
+            }
+            for (const svg of formulaSvgs) {
+                seq++;
+                if (count + 1 > maxImages) { skipped.push('公式图超过每题 ' + maxImages + ' 张上限'); break; }
+                try {
+                    const data = await svgToPngDataUrl(svg);
+                    if (totalBytes + data.length > MAX_TOTAL_BYTES) { skipped.push('公式图总大小超过上限'); break; }
+                    totalBytes += data.length;
+                    count++;
+                    parts.push({ type: 'image_url', image_url: { url: data } });
+                    media.push({owner:title,sequence:seq,kind:'formula-svg',source:'inline-svg',bytes:data.length,preview:await imagePreview(data)});
+                } catch (e) {
+                    skipped.push('公式渲染失败：' + (e && e.message ? e.message : e));
                 }
             }
         }
@@ -665,7 +905,16 @@ var zx420 = (function () {
         if (parts.every(p => p.type !== 'image_url' && !/[\p{L}\p{N}]/u.test(p.text.replace(/^(题目|选项 [A-H]):\s*/, '')))) {
             throw new Error('题目内容不完整，无法安全判断');
         }
-        return { parts: parts, imageCount: count, hadImageRefs: hadImageRefs, skipped: skipped };
+        // 只有“要求读图却没取全”时才阻断；关闭读图时上面的 skipped 只是提示，文字照发。
+        if (useImages && hadImageRefs > 0 && (skipped.length > 0 || count !== hadImageRefs)) {
+            const error = new Error('题目视觉资源未完整获取（需要 '+hadImageRefs+'，成功 '+count+'）：'+skipped.join('；'));
+            error.code = 'MEDIA_INCOMPLETE';
+            error.expectedImages = hadImageRefs;
+            error.actualImages = count;
+            error.skipped = skipped.slice();
+            throw error;
+        }
+        return { parts: parts, imageCount: count, hadImageRefs: hadImageRefs, skipped: skipped, media:media };
     }
 
     function apiError(message, retryable) {
@@ -691,7 +940,9 @@ var zx420 = (function () {
                     resolve({ raw: typeof msg.content === 'string' ? msg.content : '',
                         finishReason: choice.finish_reason || '',
                         usage: obj.usage || {},
-                        hadReasoning: !!msg.reasoning_content });
+                        hadReasoning: !!msg.reasoning_content,
+                        reasoning: typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '',
+                        model: obj.model || '', responseId: obj.id || '' });
                 },
                 onerror: () => reject(apiError('网络连接失败', true)),
                 ontimeout: () => reject(apiError('响应超时', true))
@@ -732,18 +983,25 @@ var zx420 = (function () {
         return s;
     }
     function parseReview(reply, q) {
-        if (!reply || !reply.raw || !reply.raw.trim()) return { status:'pending', answer:[], explanation:'模型正文为空', raw:reply && reply.raw || '' };
-        if (reply.finishReason === 'length') return { status:'pending', answer:[], explanation:'模型输出被截断', raw:reply.raw };
+        if (!reply || !reply.raw || !reply.raw.trim()) return { status:'pending', answer:[], errorCode:'EMPTY_RESPONSE', explanation:'模型正文为空', raw:reply && reply.raw || '' };
+        if (reply.finishReason === 'length') return { status:'pending', answer:[], errorCode:'TRUNCATED', explanation:'模型输出被截断', raw:reply.raw };
         let obj;
         try { obj = JSON.parse(extractJson(reply.raw)); }
-        catch (_) { return { status:'pending', answer:[], explanation:'模型返回内容不是合法 JSON', raw:reply.raw }; }
+        catch (_) { return { status:'pending', answer:[], errorCode:'INVALID_JSON', explanation:'模型返回内容不是合法 JSON', raw:reply.raw }; }
+        if (!obj || typeof obj !== 'object') return { status:'pending', answer:[], errorCode:'INVALID_JSON', explanation:'模型返回内容不是 JSON 对象', raw:reply.raw };
         let answer = obj.selected || obj.answer_letters || obj.letters || [];
         if (typeof answer === 'string') answer = answer.trim().toUpperCase().match(/[A-H]/g) || [];
         if (!Array.isArray(answer)) answer = [];
         answer = Array.from(new Set(answer.map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-H]$/.test(x))));
-        if (answer.some(x => (x.charCodeAt(0) - 65) >= q.options.length)) return {status:'pending',answer:[],explanation:'模型选项超出范围',raw:reply.raw};
-        if (obj.uncertain === true) return { status:'pending', answer:answer, explanation:'模型明确表示不确定：'+String(obj.explanation||''), raw:reply.raw };
-        if (q.options.length && !answer.length) return { status:'pending', answer:[],explanation:'模型未给出可识别的选项字母',raw:reply.raw };
+        const optionCount = Array.isArray(q && q.options) ? q.options.length : 0;
+        if (answer.some(x => (x.charCodeAt(0) - 65) >= optionCount)) return {status:'pending',answer:[],errorCode:'INVALID_CHOICE',explanation:'模型选项超出范围',raw:reply.raw};
+        if (obj.uncertain === true) return { status:'pending', answer:answer, errorCode:'MODEL_UNCERTAIN', explanation:'模型明确表示不确定：'+String(obj.explanation||''), raw:reply.raw };
+        if (optionCount && !answer.length) return { status:'pending', answer:[],errorCode:'NO_CHOICE',explanation:'模型未给出可识别的选项字母',raw:reply.raw };
+        if (!optionCount) {
+            const responseText = String(obj.answer || obj.final_answer || obj.explanation || '').trim();
+            return { status:'pending', answer:[], answerText:responseText,
+                errorCode:'NON_CHOICE_REVIEW', explanation:'非选择题需要人工核验：'+ responseText,raw:reply.raw };
+        }
         const a = (q.selected || []).slice().sort().join('');
         const b = answer.slice().sort().join('');
         return { status: a === b ? 'same' : (a ? 'different' : 'unanswered'),
@@ -762,16 +1020,22 @@ var zx420 = (function () {
     }
     async function callAI(input, review) {
         const q = typeof input === 'string' ? JSON.parse(input) : input;
-        if (!OWN_API || !OWN_API.enabled || !OWN_API.apiKey || !OWN_API.baseUrl || String(OWN_API.apiKey).includes('REPLACE')) throw new Error('未配置 API');
+        if (!OWN_API || !OWN_API.enabled) throw new Error('未配置 API');
+        const noAuth = String(OWN_API.authStyle || 'bearer') === 'none';
+        if (!OWN_API.baseUrl || (!OWN_API.apiKey && !noAuth) || String(OWN_API.apiKey || '').includes('REPLACE')) throw new Error('未配置 API');
         const model = String(OWN_API.model || 'deepseek-flash');
-        // 读图条件：显式开启，或模型本身就是支持视觉的 deepseek-flash。
-        const wantImages = OWN_API.vision !== false && (OWN_API.vision === true || model === 'deepseek-flash');
-        let prepared = await prepareMessages(q, wantImages);
-        // 图片全部取不到时退回纯文本再拼一次，保证带图题至少能靠文字作答。
-        if (wantImages && prepared.hadImageRefs > 0 && prepared.imageCount === 0) {
-            try { log('图片全部读取失败，本题改用纯文本复核', 'orange'); } catch (_) {}
-            prepared = await prepareMessages(q, false);
+        if (/单选|多选|选择题/.test(String(q.type||'')) && (!Array.isArray(q.options) || q.options.length<2)) {
+            const e=new Error('选择题选项未完整提取（不足两项），请重新加载题目页面');
+            e.code='OPTIONS_INCOMPLETE';throw e;
         }
+        if (/\[图片\]|\[公式\/图片\]/.test(String(q.question||'')) && !/<img\b|<svg\b|<canvas\b|mjx-container/i.test(String(q.question||''))) {
+            const e=new Error('页面只有图片占位符，缺少实际图片资源，请重新加载原题');
+            e.code='MEDIA_PLACEHOLDER_ONLY';throw e;
+        }
+        // 读图条件：显式开启；auto 模式以 /models 的 input_modalities 为准，未知时才按官方的 deepseek-flash 兜底。
+        const visionCapable = OWN_API.visionSupported === false ? false : (OWN_API.visionSupported === true || model === 'deepseek-flash');
+        const wantImages = OWN_API.vision !== false && (OWN_API.vision === true || (OWN_API.vision === 'auto' && visionCapable));
+        let prepared = await prepareMessages(q, wantImages);
         const eff = ['low','high','max'].includes(String(OWN_API.effort)) ? String(OWN_API.effort) : 'low';
         const system = review
             ? '你是数学题目独立核对助手。请根据题目和 A/B/C/D 选项作答，只输出严格的 json 对象，不要解释额外文本。格式示例：{"selected":["B"],"explanation":"简短的可核对依据","uncertain":false}。多选题 selected 可有多个字母；题目信息不足时返回 selected:[] 且 uncertain:true。'
@@ -788,12 +1052,20 @@ var zx420 = (function () {
         try {
             reply = await apiRequestAny(body, timeout);
         } catch (e) {
-            // 某些兼容服务对 thinking 字段直接 400，去掉扩展参数再试一次。
-            if (body.thinking && /HTTP 400/.test(String(e && e.message || ''))) {
+            let lastErr = e;
+            // 兼容服务对 thinking / reasoning_effort 直接 400：去掉扩展参数重试一次。
+            if (body.thinking && /HTTP 400/.test(String(lastErr && lastErr.message || lastErr))) {
                 try { log('服务拒绝 thinking 参数，已改用普通请求重试', 'orange'); } catch (_) {}
                 delete body.thinking; delete body.reasoning_effort;
-                reply = await apiRequestAny(body, timeout);
-            } else throw e;
+                try { reply = await apiRequestAny(body, timeout); } catch (e2) { lastErr = e2; }
+            }
+            // 不支持 response_format 的服务同样会 400：去掉 JSON 模式再试一次，parseReview 仍能剥正文。
+            if (!reply && body.response_format && /HTTP 400/.test(String(lastErr && lastErr.message || lastErr))) {
+                try { log('服务拒绝 JSON 模式，已改用普通请求重试', 'orange'); } catch (_) {}
+                delete body.response_format;
+                try { reply = await apiRequestAny(body, timeout); } catch (e2) { lastErr = e2; }
+            }
+            if (!reply) throw lastErr;
         }
         if (prepared.skipped && prepared.skipped.length) {
             try { log(prepared.skipped.join('；'), 'gray'); } catch (_) {}
@@ -803,7 +1075,32 @@ var zx420 = (function () {
             error.raw = reply.raw;
             throw error;
         }
-        if (review) return { reply:reply, result:parseReview(reply, q), sentImages:prepared.imageCount };
+        if (review) {
+            let result = parseReview(reply,q);
+            let shouldRepair=true;
+            try{shouldRepair=localStorage.getItem('ZhixingSetting.repairJson')!=='false'}catch(_){}
+            if (result.errorCode === 'INVALID_JSON' && shouldRepair) {
+                try {
+                    const repair = {
+                        model:model,stream:false,
+                        messages:[
+                            {role:'system',content:'请把给出的数学题答案转换成一个严格 JSON 对象，格式为 {"selected":["B"],"explanation":"依据","uncertain":false}。只能使用题目选项字母，无法确定时返回 uncertain:true。不允许杜撰或改变结论。'},
+                            {role:'user',content:'题型：'+String(q.type||'')+'，选项数：'+(q.options||[]).length+'。待修复回复：\n'+reply.raw.slice(0,7000)}
+                        ],response_format:{type:'json_object'}
+                    };
+                    const repaired = await apiRequestAny(repair,Math.min(timeout,45000));
+                    const parsed = parseReview(repaired,q);
+                    if (parsed.errorCode !== 'INVALID_JSON') {
+                        result=parsed; result.repaired=true;
+                        result.firstRaw=reply.raw;
+                        reply=repaired;
+                    }
+                } catch (e) { result.repairError=String(e&&e.message||e); }
+            }
+            return { reply:reply, result:result, sentImages:prepared.imageCount, sentMedia:prepared.media,
+                request:{model:model,effort:eff,expectedImages:prepared.hadImageRefs,images:prepared.imageCount,
+                    textParts:prepared.parts.filter(p=>p.type==='text').map(p=>p.text),format:'json_object'} };
+        }
         const ans = ownApiCleanAnswer(reply.raw, typeof input === 'string' ? input : JSON.stringify(input));
         if (!ans) throw new Error(reply.hadReasoning ? '只有推理内容，缺少最终答案' : 'AI 返回空白答案');
         return { answer:ans, raw:reply.raw, sentImages:prepared.imageCount };
@@ -836,23 +1133,82 @@ var zx420 = (function () {
         });
     }
 
-    // 只保留最近 MAX_RECORDS 条，防止记录库无限增长。
-    const MAX_RECORDS = 800;
+    // Stable per-exam namespace. Ignore volatile query tokens and do not store credentials.
+    function examKey(questions) {
+        const p = new URLSearchParams(location.search || '');
+        const fields=['examId','examid','testId','testid','paperId','paperid','courseId','workId'];
+        const stable=fields.map(k=>p.has(k)?k+'='+p.get(k):'').filter(Boolean).join('&');
+        const sample=(questions||[]).slice(0,3).map(q=>String(q.text||'').slice(0,160)).join('\n');
+        let hash=2166136261;
+        for (let i=0;i<sample.length;i++) hash=Math.imul(hash ^ sample.charCodeAt(i),16777619)>>>0;
+        return location.origin+location.pathname+'|'+stable+'|'+hash.toString(36);
+    }
+    function slimQuestion(q) {
+        return {id:String(q.id),type:q.type||'',text:q.text||'',question:q.question||'',
+            options:(q.options||[]).map(o=>({letter:o.letter,text:o.text||'',html:o.html||'',
+                hasImage:collectImageSources(o.html).length>0})),
+            selected:(q.selected||[]).slice()};
+    }
+    const MAX_HISTORY_PER_QUESTION = 5;
+    const MAX_TOTAL_RECORDS = 4000;
+    function normalizeQuestion(q) {
+        if (!q || typeof q !== 'object') return q;
+        // 4.2.6 及更早的记录只有 text，没有 question；重试时不能把题干丢了。
+        if (!q.question && q.text) q.question = String(q.text);
+        if (!Array.isArray(q.selected)) q.selected = [];
+        return q;
+    }
+    function normalizeRecord(r) {
+        if (r && r.question) normalizeQuestion(r.question);
+        return r;
+    }
     async function pruneRecords() {
         try {
             const arr = await dbAction('getAll');
-            if (!Array.isArray(arr) || arr.length <= MAX_RECORDS) return 0;
-            arr.sort((a,b)=>(a.time||0)-(b.time||0));
-            const drop = arr.slice(0, arr.length - MAX_RECORDS);
-            for (const r of drop) { try { await dbAction('delete', r.uid); } catch (_) {} }
-            return drop.length;
+            if (!Array.isArray(arr) || !arr.length) return 0;
+            const groups = new Map();
+            arr.forEach(function (r) {
+                if (!r) return;
+                const q = r.question || {};
+                const key = String(r.examKey || r.url || '') + '|' + String(q.id == null ? '' : q.id);
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(r);
+            });
+            const drop = new Set();
+            groups.forEach(function (list) {
+                list.sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
+                list.slice(MAX_HISTORY_PER_QUESTION).forEach(function (r) {
+                    if (r && r.uid) drop.add(r.uid);
+                });
+            });
+            // 总量兜底：只保留最近 MAX_TOTAL_RECORDS 条，避免长期使用把 IndexedDB 撑爆。
+            const kept = arr.filter(function (r) { return r && r.uid && !drop.has(r.uid); });
+            kept.sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
+            kept.slice(MAX_TOTAL_RECORDS).forEach(function (r) { drop.add(r.uid); });
+            let removed = 0;
+            for (const uid of drop) {
+                try { await dbAction('delete', uid); removed++; } catch (_) { }
+            }
+            return removed;
         } catch (_) { return 0; }
     }
-
-    function slimQuestion(q) {
-        return {id:q.id,type:q.type,text:q.text,
-            options:q.options.map(o=>({letter:o.letter,text:o.text,hasImage:collectImageSources(o.html).length>0})),
-            selected:q.selected};
+    function currentPageRecords() {
+        if (!activeExamKey) {
+            try { const qs=pageQuestions(); if(qs.length)activeExamKey=examKey(qs); }catch(_){}
+        }
+        return dbAction('getAll').then(arr=>arr.filter(r=>{
+            if (activeExamKey) return r.examKey===activeExamKey || (!r.examKey && r.url===location.origin+location.pathname);
+            return r.url===location.origin+location.pathname;
+        }).map(function (r) {
+            // 旧记录没有 examKey：归到当前试卷，才能和新版记录按题号去重，而不是同题留两条。
+            if (!r.examKey && activeExamKey && r.url === location.origin + location.pathname) r.examKey = activeExamKey;
+            return normalizeRecord(r);
+        }));
+    }
+    async function persistRecord(record) {
+        record.time=Date.now();
+        await dbAction('put',record);
+        return record;
     }
 
     function log(msg, color) {
@@ -860,105 +1216,284 @@ var zx420 = (function () {
     }
     function delay(ms) { return new Promise(resolve=>setTimeout(resolve,ms)); }
     async function scrollLoad() {
-        const initial = window.scrollY;
-        let stable = 0, last = -1;
-        for (let i = 0; i < 18 && stable < 3; i++) {
-            if (stopRequested) break;
-            const h = Math.max(document.documentElement.scrollHeight, document.body && document.body.scrollHeight || 0);
-            window.scrollTo(0, Math.min(h, window.scrollY + Math.max(480,innerHeight*0.85)));
-            await delay(220);
-            if (h === last) stable++; else stable = 0;
-            last = h;
-            if (window.scrollY + window.innerHeight >= h-30) stable++;
+        const scrolling=document.scrollingElement || document.documentElement;
+        const candidates=[scrolling].concat(Array.from(document.querySelectorAll('main,section,div,article'))
+            .filter(el=>{
+                if(el.scrollHeight<=el.clientHeight+120||el.clientHeight<=150)return false;
+                try{return /auto|scroll/.test(getComputedStyle(el).overflowY)}catch(_){return false}
+            }));
+        const roots=Array.from(new Set(candidates));
+        const original=roots.map(el=>({el,top:el.scrollTop,left:el.scrollLeft}));
+        let stable=0,last='';
+        try {
+            for(let cycle=0;cycle<90 && stable<5;cycle++) {
+                if(stopRequested) break;
+                for (const el of roots) {
+                    if(!el||!el.isConnected)continue;
+                    const max=Math.max(0,el.scrollHeight-el.clientHeight);
+                    if(el.scrollTop<max-2) el.scrollTop=Math.min(max,el.scrollTop+Math.max(360,el.clientHeight*.85));
+                }
+                await delay(250);
+                const fingerprint=pageQuestions().length+'|'+roots.map(el=>el.scrollHeight+':'+el.scrollTop).join('/');
+                const atBottom=roots.every(el=>el.scrollTop+el.clientHeight >= el.scrollHeight-4);
+                if(fingerprint===last&&atBottom)stable++;else stable=0;
+                last=fingerprint;
+            }
+        } finally {
+            original.forEach(it=>{if(it.el&&it.el.isConnected){it.el.scrollTop=it.top;it.el.scrollLeft=it.left;}});
         }
-        window.scrollTo(0, initial);
+    }
+    async function waitReviewUnpaused() {
+        while(reviewPaused&&!stopRequested) await delay(250);
     }
 
-    async function reviewPage() {
-        if (busy) { log('已有核对任务运行中', 'orange'); return; }
-        if (!location.pathname.includes('/exam/preview')) { log('只读核对目前仅支持学习通考试预览页', 'orange'); return; }
-        busy=true; stopRequested=false; currentCount=0; currentTotal=0;
+    function classifyError(e) {
+        if (e && e.code) return e.code;
+        const text=String(e&&e.message||e||'');
+        if(/HTTP 401|HTTP 403|鉴权/i.test(text))return 'API_AUTH';
+        if(/HTTP 429|频繁/i.test(text))return 'RATE_LIMIT';
+        if(/HTTP 400/i.test(text))return 'BAD_REQUEST';
+        if(/超时|timeout/i.test(text))return 'TIMEOUT';
+        if(/JSON/i.test(text))return 'INVALID_JSON';
+        if(/图片|公式|视觉/i.test(text))return 'MEDIA_INCOMPLETE';
+        return 'API_ERROR';
+    }
+    async function checkOne(q,session,previous) {
+        q = normalizeQuestion(q);
+        const record={ uid:previous&&previous.uid || session+'-'+q.id,session:session,
+            examKey:activeExamKey,url:location.origin+location.pathname,
+            question:slimQuestion(q),status:'pending',answer:[],explanation:'',raw:'',
+            attempts:(previous&&previous.attempts||0)+1 };
         try {
-            log('正在滚动扫描试卷（不会点击答案或交卷）');
+            const data=await callAI(q,true);
+            Object.assign(record,{status:data.result.status,answer:data.result.answer,
+                answerText:data.result.answerText||'',explanation:data.result.explanation,
+                errorCode:data.result.errorCode||'',repaired:!!data.result.repaired,
+                raw:data.result.raw,firstRaw:data.result.firstRaw||'',
+                reasoning:data.reply.reasoning||'',usage:data.reply.usage||{},
+                responseId:data.reply.responseId||'',model:data.reply.model||OWN_API.model,
+                media:data.sentMedia||[],request:data.request||{}});
+        } catch(e) {
+            record.status='pending';record.errorCode=classifyError(e);
+            record.explanation='请求异常：'+String(e&&e.message||e);
+            record.raw=String(e&&e.raw||'');
+            record.media=[];
+            record.request={expectedImages:e&&e.expectedImages||0,sentImages:e&&e.actualImages||0,
+                skipped:e&&e.skipped||[]};
+        }
+        await persistRecord(record);
+        return record;
+    }
+    async function reviewPage() {
+        if(busy){log('已有核对任务运行中','orange');return;}
+        if(!location.pathname.includes('/exam/preview')){log('只读核对目前仅支持学习通考试预览页','orange');return;}
+        busy=true;reviewPaused=false;stopRequested=false;currentCount=0;currentTotal=0;
+        try {
+            log('正在扫描试卷，未修改任何作答');
             await scrollLoad();
             const questions=pageQuestions();
+            activeExamKey=examKey(questions);
             currentTotal=questions.length;
-            log('扫描到 '+questions.length+' 道题，准备逐题核对。', 'blue');
-            if (!questions.length) throw new Error('找不到题目，请先让网页完整加载');
+            if(!questions.length)throw new Error('未发现可核对题目');
             const batch=Date.now().toString(36);
-            for (const q of questions) {
-                if(stopRequested) { log('用户停止核对', 'orange'); break; }
-                let record={ uid:batch+'-'+q.id,session:batch,url:location.origin+location.pathname,
-                    time:Date.now(),question:slimQuestion(q),status:'pending',answer:[],explanation:'',raw:''};
-                try {
-                    const data=await callAI(q,true);
-                    Object.assign(record,{status:data.result.status,answer:data.result.answer,
-                        explanation:data.result.explanation,raw:data.result.raw,images:data.sentImages});
-                } catch(e) { record.status='pending'; record.explanation='请求异常：'+(e.message||e); record.raw=String(e.raw||''); }
-                try { await dbAction('put',record); } catch(e) { log('保存核对记录失败：'+e.message,'red'); }
+            log('本次扫描到 '+questions.length+' 道题','blue');
+            for(const q of questions){
+                if(stopRequested)break;
+                await waitReviewUnpaused();
+                if(stopRequested)break;
+                const record=await checkOne(q,batch,null);
                 currentCount++;
-                try { if(typeof zx421!=='undefined')zx421.refresh(); } catch (_) {}
-                log('第 '+q.id+' 题：'+({same:'一致',different:'不一致',unanswered:'未作答',pending:'待复核'}[record.status]||record.status),record.status==='same'?'green':record.status==='different'?'orange':'gray');
-                // 避免连续过快触发 API 流控
+                try { if(typeof zx421!=='undefined')zx421.refresh(); }catch(_){}
+                log('第 '+q.id+' 题：'+({same:'一致',different:'不一致',unanswered:'未作答',pending:'待复核'}[record.status]||record.status)+
+                    (record.errorCode?' ('+record.errorCode+')':''),record.status==='same'?'green':'orange');
                 await delay(300);
             }
-            const pruned = await pruneRecords();
-            if (pruned) log('已清理 ' + pruned + ' 条旧核对记录（只保留最近 ' + MAX_RECORDS + ' 条）', 'gray');
-            log('核对结束，已处理 '+currentCount+' 道；打开「核对记录」查看。','green');
-            if(typeof zx421==='undefined'||zx421.getMode()==='sidebar') await showRecords();
-            else log('核对结果已保存，展开悬浮球后在「记录」中查看。','green');
-        } catch(e){ log('核对中止：'+(e.message||e),'red'); }
-        finally {busy=false;stopRequested=false;try{if(typeof zx421!=='undefined')zx421.refresh();}catch(_){}}
+            log('核对已停止或完成：'+currentCount+'/'+currentTotal+'题','blue');
+            const pruned=await pruneRecords();
+            if(pruned)log('已清理 '+pruned+' 条旧核对记录（每题保留最近 '+MAX_HISTORY_PER_QUESTION+' 次）','gray');
+            if(!stopRequested && (typeof zx421==='undefined'||zx421.getMode()==='sidebar'))await showRecords();
+        }catch(e){log('核对中止：'+String(e&&e.message||e),'red');}
+        finally{busy=false;reviewPaused=false;stopRequested=false;try{if(typeof zx421!=='undefined')zx421.refresh()}catch(_){}}
+    }
+    async function retryRecord(record) {
+        if(busy)return false;
+        if(!record||!record.question||!record.uid)return false;
+        busy=true;stopRequested=false;reviewPaused=false;
+        try {
+            const saved=await checkOne(record.question,record.session||Date.now().toString(36),record);
+            await pruneRecords();
+            await showRecords();
+            return saved;
+        }finally{busy=false;}
+    }
+    async function retryPending() {
+        if(busy){log('已有核对任务运行中','orange');return;}
+        busy=true;reviewPaused=false;stopRequested=false;
+        try {
+            const all=latestRecords(await currentPageRecords());
+            // 非选择题永远 pending，重试只会重复计费，不能混进“重试待复核”。
+            const pending=all.filter(r=>r.status==='pending'&&r.errorCode!=='NON_CHOICE_REVIEW');
+            currentTotal=pending.length;currentCount=0;
+            for(const r of pending){
+                if(stopRequested)break;
+                await waitReviewUnpaused();
+                if(stopRequested)break;
+                await checkOne(r.question,r.session||Date.now().toString(36),r);
+                currentCount++;
+                try{if(typeof zx421!=='undefined')zx421.refresh();}catch(_){}
+                await delay(350);
+            }
+            await pruneRecords();
+            await showRecords();
+        }finally{busy=false;reviewPaused=false;stopRequested=false;}
     }
 
-    function downloadText(name,content,mime) {
-        const blob=new Blob([content],{type:mime||'text/plain;charset=utf-8'});
-        const href=URL.createObjectURL(blob);
-        const a=document.createElement('a');a.href=href;a.download=name;document.body.appendChild(a);a.click();a.remove();
-        setTimeout(()=>URL.revokeObjectURL(href),4000);
+    // 同一题可能核对过多次（多批次），按题号保留最新一条。
+    function latestRecords(arr) {
+        const map = new Map();
+        (arr || []).forEach(function (r) {
+            const q = r && r.question ? r.question : {};
+            const key = q.id == null || q.id === '' ? '' : String(r.examKey || r.url || '')+'|'+String(q.id);
+            if (!key) return;
+            const prev = map.get(key);
+            if (!prev || (r.time || 0) > (prev.time || 0)) map.set(key, r);
+        });
+        return Array.from(map.values()).sort(function (a, b) {
+            const x = String((a.question || {}).id || '');
+            const y = String((b.question || {}).id || '');
+            return x.localeCompare(y, undefined, { numeric: true });
+        });
     }
 
+    function showRecordDetail(detail, r) {
+        const doc = getPanelDocument();
+        const q = r.question || {};
+        const label = { same:'一致', different:'不一致', pending:'待复核', unanswered:'未作答' }[r.status] || r.status || '待复核';
+        const card = doc.createElement('div'); card.className = 'zx421-card';
+        const h = doc.createElement('h5'); h.textContent = '第 ' + (q.id || '?') + ' 题 · ' + label;
+        const meta = doc.createElement('p'); meta.className = 'zx421-muted';
+        meta.textContent = '已选 ' + (q.selected || []).join(',') + '　｜　AI ' + (r.answer || []).join(',') + '　｜　' + (q.type || '');
+        const pre = doc.createElement('pre');
+        let rawView = r.raw;
+        try { rawView = JSON.stringify(JSON.parse(String(r.raw).replace(/^```[a-zA-Z]*\s*\n?/,'').replace(/\n?```\s*$/,'').trim()), null, 2); } catch (_) { }
+        pre.textContent = '题干：' + (q.text || '（题干为空）') + '\n\n选项：\n'+(q.options||[]).map(o=>(o.letter||'')+'. '+(o.text||'')).join('\n')+'\n\n错误类型：'+(r.errorCode||'无')+'\n依据/异常：' + (r.explanation || '') + '\n\n模型完整正文：\n' + rawView+'\n\n推理信息：\n'+(r.reasoning||'');
+        const mediaBox=doc.createElement('div');mediaBox.className='zx425-media-list';
+        (r.media||[]).forEach(function(media){
+            const figure=doc.createElement('figure');figure.className='zx425-media';
+            const label=doc.createElement('figcaption');
+            label.textContent=String(media.owner||'图片')+' #'+String(media.sequence||'')+' · '+String(media.kind||'');
+            figure.appendChild(label);
+            if(media.preview&&/^data:image\/(png|jpeg|gif|webp);base64,/i.test(media.preview)){
+                const img=doc.createElement('img');img.src=media.preview;img.loading='lazy';img.alt=label.textContent;
+                figure.appendChild(img);
+            } else {
+                const msg=doc.createElement('small');msg.textContent='未保存预览：'+String(media.source||'');figure.appendChild(msg);
+            }
+            mediaBox.appendChild(figure);
+        });
+        const diag=doc.createElement('pre');diag.textContent='发送诊断：'+JSON.stringify(r.request||{},null,2);
+        card.append(h, meta, mediaBox, pre, diag);
+        detail.textContent = '';
+        detail.appendChild(card);
+    }
+
+    function downloadRecords(filename,blob) {
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');a.href=url;a.download=filename;
+        document.body.appendChild(a);a.click();a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),10000);
+    }
+    async function exportRecords(format) {
+        const list=latestRecords(await currentPageRecords());
+        const name='zhixing-review-'+new Date().toISOString().slice(0,10);
+        if(format==='csv'){
+            const header=['题号','题型','状态','错误类型','已选','AI答案','题干','依据'];
+            const esc=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
+            const csv='\ufeff'+[header].concat(list.map(r=>[
+                r.question&&r.question.id,r.question&&r.question.type,r.status,r.errorCode,
+                (r.question&&r.question.selected||[]).join(','),(r.answer||[]).join(','),
+                r.question&&r.question.text,r.explanation])).map(row=>row.map(esc).join(',')).join('\r\n');
+            downloadRecords(name+'.csv',new Blob([csv],{type:'text/csv;charset=utf-8'}));
+        }else{
+            // Keys and cookies never enter this export. Preview data URLs are stripped so a
+            // many-image exam does not produce a multi-hundred-megabyte JSON file.
+            const light=list.map(function(r){
+                const copy=JSON.parse(JSON.stringify(r));
+                (copy.media||[]).forEach(function(m){ if(m) delete m.preview; });
+                return copy;
+            });
+            downloadRecords(name+'.json',new Blob([JSON.stringify(light,null,2)],{type:'application/json;charset=utf-8'}));
+        }
+    }
+    async function clearReviewRecords() {
+        if(!confirm('确定删除当前试卷的所有本地核对记录吗？此操作不能撤销。'))return;
+        const list=await currentPageRecords();
+        for(const r of list)await dbAction('delete',r.uid);
+        await showRecords();
+    }
+    function jumpToQuestion(record) {
+        if(!record||!record.question)return;
+        const id=String(record.question.id||'');
+        const major=Number(id.split('.')[0]);
+        const roots=document.querySelectorAll('.mark_table .questionLi,.questionLi,.question-item,.Py-mian1,.TiMu');
+        const node=Number.isInteger(major)&&major>0?roots[major-1]:null;
+        if(node){node.scrollIntoView({behavior:'smooth',block:'center'});try{node.style.outline='2px solid #60a5fa';setTimeout(()=>node.style.outline='',2500)}catch(_){}}
+        else log('此题在当前页面中没有找到可定位的节点','orange');
+    }
     async function showRecords() {
         let arr;
-        try { arr=await dbAction('getAll'); }
-        catch(e){log('读取核对记录失败：'+e.message,'red');return;}
-        arr=arr.filter(x=>x.url===location.origin+location.pathname).sort((a,b)=>b.time-a.time);
-        try { if (typeof zx421!=='undefined') zx421.summary(arr); } catch (_) {}
+        try{arr=await currentPageRecords();}
+        catch(e){log('核对记录读取失败：'+e.message,'red');return;}
+        const latest=latestRecords(arr);
         const doc=getPanelDocument();
-        const host=doc.getElementById('zx421RecordsPane');
-        if(!host){ log('核对记录容器未初始化，请重新打开侧栏','orange');return; }
+        const host=doc.getElementById('zx421ReviewPane');
+        if(!host)return;
         host.textContent='';
-        const head=doc.createElement('div');head.className='zx421-records-header';
-        head.innerHTML='<b>核对记录</b><button id="zx420json" type="button">JSON</button><button id="zx420csv" type="button">CSV</button>';
-        const filters=doc.createElement('div');filters.className='zx421-record-filter';
-        filters.innerHTML='<input id="zx420find" placeholder="题号或题干关键词" aria-label="搜索核对记录"><select id="zx420filter" aria-label="按结果筛选"><option value="all">全部状态</option><option value="same">一致</option><option value="different">不一致</option><option value="pending">待复核</option><option value="unanswered">未作答</option></select>';
-        const list=doc.createElement('div');list.id='zx420list';
-        host.append(head,filters,list);
-        head.querySelector('#zx420json').onclick=()=>downloadText('zhixing-review.json',JSON.stringify(arr,null,2),'application/json;charset=utf-8');
-        head.querySelector('#zx420csv').onclick=()=>{
-            const rows=[['题号','状态','已选','AI答案','题干','原因']].concat(arr.map(r=>[r.question.id,r.status,(r.question.selected||[]).join('|'),(r.answer||[]).join('|'),r.question.text,r.explanation]));
-            downloadText('zhixing-review.csv','\ufeff'+rows.map(row=>row.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\r\n'),'text/csv;charset=utf-8');
-        };
-        const find=filters.querySelector('#zx420find');const filter=filters.querySelector('#zx420filter');
-        find.oninput=render;filter.onchange=render;
-        function render(){
-            const key=find.value.trim().toLowerCase(),state=filter.value;
-            list.textContent='';
-            arr.filter(r=>(state==='all'||r.status===state)&&(!key||String(r.question.id+' '+r.question.text).toLowerCase().includes(key))).forEach(r=>{
-                const box=doc.createElement('details');
-                const sum=doc.createElement('summary');
-                const label={same:'一致',different:'不一致',pending:'待复核',unanswered:'未作答'}[r.status]||r.status;
-                sum.textContent='第 '+r.question.id+' 题 · '+label+' · 已选 '+(r.question.selected||[]).join(',')+' · AI '+(r.answer||[]).join(',');
-                const desc=doc.createElement('pre');
-                let rawView=r.raw;
-                try{rawView=JSON.stringify(JSON.parse(String(r.raw).replace(/^```[a-zA-Z]*\s*\n?/,'').replace(/\n?```\s*$/,'').trim()),null,2);}catch(_){}
-                desc.textContent='题干：'+(r.question.text||'（题干为空）')+'\n\n依据/异常：'+r.explanation+'\n\n模型完整正文：\n'+rawView;
-                box.append(sum,desc);list.appendChild(box);
-            });
-            if(!list.children.length){const p=doc.createElement('p');p.className='zx421-muted';p.textContent='暂无符合条件的记录';list.appendChild(p);}
+        const toolbar=doc.createElement('div');toolbar.className='zx425-toolbar';
+        function makeAction(label,handler){const b=doc.createElement('button');b.type='button';b.textContent=label;b.className='zx421-chip';b.onclick=handler;toolbar.appendChild(b);return b;}
+        makeAction('刷新记录',()=>showRecords());
+        makeAction('重新扫描',()=>reviewPage());
+        makeAction('重试待复核',()=>retryPending());
+        makeAction('导出 JSON',()=>exportRecords('json'));
+        makeAction('导出 CSV',()=>exportRecords('csv'));
+        makeAction('清空本卷',()=>clearReviewRecords());
+        const metrics=doc.createElement('div');metrics.className='zx421-metrics';
+        const names=[['same','一致'],['different','不一致'],['pending','待复核'],['unanswered','未作答']];
+        for(const pair of names){
+            const el=doc.createElement('div');el.className='zx421-metric';
+            const strong=doc.createElement('strong');strong.textContent=String(latest.filter(r=>r.status===pair[0]).length);
+            const cap=doc.createElement('span');cap.textContent=pair[1];el.append(strong,cap);metrics.appendChild(el);
         }
+        const search=doc.createElement('input');search.type='search';search.id='zx425ReviewSearch';search.className='zx425-review-search';
+        search.placeholder='搜索题号或题干';search.value=reviewSearch;
+        const chips=doc.createElement('div');chips.className='zx421-chips';
+        const FILTERS=[['all','全部'],['different','不一致'],['pending','待复核'],['same','一致'],['unanswered','未作答']];
+        const gridHost=doc.createElement('div');gridHost.className='zx421-grid-host';
+        const detail=doc.createElement('div');detail.className='zx421-detail';
+        const render=()=>{
+            const kw=reviewSearch.trim().toLowerCase();
+            const list=latest.filter(r=>(reviewFilter==='all'||r.status===reviewFilter)&&(!kw||String(r.question.id).toLowerCase().includes(kw)||String(r.question.text||'').toLowerCase().includes(kw)));
+            if(typeof zx421!=='undefined'&&zx421.buildGrid){
+                zx421.buildGrid(gridHost,list,(r,btn)=>{
+                    gridHost.querySelectorAll('.zx421-cell-active').forEach(el=>el.classList.remove('zx421-cell-active'));
+                    btn.classList.add('zx421-cell-active');
+                    showRecordDetail(detail,r);
+                    const actions=doc.createElement('div');actions.className='zx425-toolbar';
+                    const again=doc.createElement('button');again.className='zx421-chip';again.textContent='重新核对本题';
+                    again.onclick=()=>retryRecord(r);actions.appendChild(again);
+                    const jump=doc.createElement('button');jump.className='zx421-chip';jump.textContent='定位原题';
+                    jump.onclick=()=>jumpToQuestion(r);actions.appendChild(jump);
+                    detail.prepend(actions);
+                });
+            }
+        };
+        FILTERS.forEach(([id,label])=>{
+            const b=doc.createElement('button');b.type='button';b.className='zx421-chip'+(reviewFilter===id?' zx421-chip-on':'');b.textContent=label;
+            b.onclick=()=>{reviewFilter=id;chips.querySelectorAll('.zx421-chip').forEach(c=>c.classList.toggle('zx421-chip-on',c===b));render()};chips.appendChild(b);
+        });
+        search.oninput=()=>{reviewSearch=search.value;render()};
+        host.append(toolbar,metrics,search,chips,gridHost,detail);
         render();
-        try { if(typeof zx421!=='undefined')zx421.openTab('records'); } catch (_) {}
     }
 
     function attachPanel() {
@@ -968,12 +1503,14 @@ var zx420 = (function () {
         if(!panel)return;
         const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;padding:7px 0;flex-wrap:wrap';
         const b1=document.createElement('button');b1.id='zx420reviewbtn';b1.textContent='🔎 只读核对整卷';b1.className='ne21-btn ne21-btn-secondary';b1.type='button';b1.onclick=()=>reviewPage();
-        const b2=document.createElement('button');b2.textContent='📋 核对记录';b2.className='ne21-btn ne21-btn-secondary';b2.type='button';b2.onclick=()=>showRecords();
         const b3=document.createElement('button');b3.textContent='停止核对';b3.className='ne21-btn ne21-btn-secondary';b3.type='button';b3.onclick=()=>{stopRequested=true;};
-        row.append(b1,b2,b3);panel.prepend(row);
+        const bp=document.createElement('button');bp.type='button';bp.textContent='暂停/继续核对';bp.className='ne21-btn ne21-btn-secondary';bp.onclick=()=>{reviewPaused=!reviewPaused;};row.append(b1,bp,b3);panel.prepend(row);
     }
 
-    return {callAI,reviewPage,showRecords,attachPanel,stopReview:()=>{stopRequested=true;},getReviewState:()=>({busy:busy,count:currentCount,total:currentTotal}),getReviewRecords:()=>dbAction('getAll').then(arr=>arr.filter(x=>x.url===location.origin+location.pathname)),optionHtml,extractQuestionData,pageQuestions,
+    return {callAI,reviewPage,showRecords,attachPanel,stopReview:()=>{stopRequested=true;},pauseReview:()=>{reviewPaused=!reviewPaused;},
+        retryPending,retryRecord,exportRecords,jumpToQuestion,clearReviewRecords,
+        getReviewState:()=>({busy:busy,paused:reviewPaused,count:currentCount,total:currentTotal}),
+        getReviewRecords:currentPageRecords,latestRecords,optionHtml,extractQuestionData,pageQuestions,
         prepareMessages,parseReview,optionLetters,collectImageSources};
 })();
 /* ===== 知行 4.2.0 新模块结束 ===== */
@@ -985,11 +1522,12 @@ var zx421 = (function () {
     'use strict';
     var PREFIX = 'ZhixingSetting.ui421.';
     var SIDES = ['left', 'right'];
-    var TABS = ['control', 'review', 'records', 'settings'];
+    var TABS = ['control', 'course', 'review', 'settings'];
     var styleId = 'zx421-sidebar-style';
     var activeDocument = null;
     var ballPointer = null;
     var polling = null;
+    var lastPushSig = '';
 
     function get(key, fallback) {
         try { var val = localStorage.getItem(PREFIX + key); return val === null ? fallback : val; }
@@ -1020,17 +1558,17 @@ var zx421 = (function () {
   box-sizing:border-box!important;position:fixed!important;top:0!important;bottom:0!important;
   right:0;left:auto;width:var(--zx421-width,380px)!important;
   height:100vh!important;height:100dvh!important;max-height:none!important;
-  border-radius:18px 0 0 18px!important;margin:0!important;
+  border-radius:0!important;margin:0!important;
   z-index:2147483000!important;display:flex;flex-direction:column;
-  background:linear-gradient(155deg,rgba(251,253,255,.98),rgba(237,243,251,.97))!important;
-  border:1px solid rgba(148,163,184,.26)!important;
-  box-shadow:-14px 0 40px rgba(15,23,42,.15)!important;
-  backdrop-filter:blur(22px)!important;-webkit-backdrop-filter:blur(22px)!important;
+  background:#fff!important;
+  border:0!important;
+  box-shadow:-16px 0 36px rgba(15,23,42,.12)!important;
+  backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
   animation:none!important;transition:box-shadow .2s ease!important;
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
 }
-#ne-21box.zx421-sidebar.zx421-left {left:0!important;right:auto!important;border-radius:0 18px 18px 0!important;box-shadow:14px 0 40px rgba(15,23,42,.15)!important;}
-#ne-21box.zx421-sidebar .ne21-header {touch-action:auto!important;cursor:default!important;padding:13px 15px!important;gap:8px;flex-shrink:0;}
+#ne-21box.zx421-sidebar.zx421-left {left:0!important;right:auto!important;border-radius:0!important;border:0!important;box-shadow:16px 0 36px rgba(15,23,42,.12)!important;}
+#ne-21box.zx421-sidebar .ne21-header {touch-action:auto!important;cursor:default!important;padding:13px 15px!important;gap:8px;flex-shrink:0;background:#fff!important;border-bottom:1px solid #eef2f7!important;}
 #ne-21box.zx421-sidebar #ne21DragHandle {display:none!important;}
 #ne-21box.zx421-sidebar .ne21-header .ne21-kbd {display:none;}
 #ne-21box.zx421-sidebar .ne21-header #ne21FailChip {display:inline-flex;}
@@ -1046,12 +1584,12 @@ var zx421 = (function () {
 #ne-21box.zx421-sidebar .zx421-progress {height:5px;margin-top:9px;background:#e0e9f5;border-radius:100px;overflow:hidden;}
 #ne-21box.zx421-sidebar .zx421-progress > span {height:100%;width:0;display:block;border-radius:100px;background:#4386ed;transition:width .2s ease;}
 #ne-21box.zx421-sidebar .ne21-body {display:flex!important;flex:1 1 auto;min-height:0;overflow:hidden!important;padding:0!important;}
-#ne-21box.zx421-sidebar .zx421-page {display:none;overflow-y:auto;overscroll-behavior:contain;min-height:0;flex:1 1 auto;padding:15px 14px 24px;box-sizing:border-box;}
+#ne-21box.zx421-sidebar .zx421-page {display:none;overflow-y:auto;overscroll-behavior:contain;min-height:0;flex:1 1 auto;padding:15px 14px 24px;box-sizing:border-box;background:#f7f9fc!important;}
 #ne-21box.zx421-sidebar .zx421-page.zx421-active {display:block;}
 #ne-21box.zx421-sidebar .zx421-page::-webkit-scrollbar {width:6px;}
 #ne-21box.zx421-sidebar .zx421-page::-webkit-scrollbar-thumb {background:#cbd5e1;border-radius:6px;}
 #ne-21box.zx421-sidebar .zx421-section-title {margin:0 0 10px;font-size:13px;font-weight:650;color:#334155;}
-#ne-21box.zx421-sidebar .zx421-card {background:rgba(255,255,255,.62);border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:12px;margin-bottom:12px;}
+#ne-21box.zx421-sidebar .zx421-card {background:#fff!important;border:1px solid #e6edf5!important;border-radius:14px;padding:12px;margin-bottom:12px;box-shadow:0 1px 2px rgba(15,23,42,.03);}
 #ne-21box.zx421-sidebar .zx421-card p {margin:4px 0;color:#475569;}
 #ne-21box.zx421-sidebar .zx421-muted {font-size:11px;color:#64748b;line-height:1.5;}
 #ne-21box.zx421-sidebar .zx421-main-btn {font-size:13px;min-height:38px;width:100%;border:1px solid rgba(59,130,246,.25);border-radius:12px;color:#fff;background:linear-gradient(100deg,#3b82f6,#2563eb);font-weight:600;cursor:pointer;margin:10px 0 0;}
@@ -1073,18 +1611,37 @@ var zx421 = (function () {
 #ne-21box.zx421-sidebar .zx421-footer {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));flex-shrink:0;border-top:1px solid rgba(148,163,184,.22);background:rgba(255,255,255,.78);padding:7px 8px max(7px,env(safe-area-inset-bottom));gap:4px;}
 #ne-21box.zx421-sidebar .zx421-tab {border:0;border-radius:10px;background:transparent;min-height:51px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px;cursor:pointer;color:#64748b;font-size:11px;padding:5px 3px;}
 #ne-21box.zx421-sidebar .zx421-tab .zx421-tab-icon {font-size:17px;line-height:1.25;}
+#ne-21box.zx421-sidebar .zx421-tab{min-width:0;}
 #ne-21box.zx421-sidebar .zx421-tab[aria-selected='true'] {background:rgba(37,99,235,.09);color:#1d4ed8;font-weight:650;}
 #ne-21box.zx421-sidebar .zx421-tab:hover {background:rgba(37,99,235,.08);}
-#ne-21box.zx421-sidebar #zx421RecordsPane {min-height:140px;}
-#ne-21box.zx421-sidebar .zx421-records-header {display:flex;flex-wrap:wrap;gap:7px;margin-bottom:9px;align-items:center;}
-#ne-21box.zx421-sidebar .zx421-records-header b {font-size:13px;flex:1;}
-#ne-21box.zx421-sidebar .zx421-records-header button {padding:6px 10px;border:1px solid #dbe3f0;border-radius:8px;background:#fff;cursor:pointer;}
-#ne-21box.zx421-sidebar .zx421-record-filter {display:flex;gap:6px;margin-bottom:12px;}
-#ne-21box.zx421-sidebar .zx421-record-filter input, #ne-21box.zx421-sidebar .zx421-record-filter select {min-width:0;flex:1;max-width:100%;box-sizing:border-box;padding:8px;border:1px solid #dbe3f0;border-radius:8px;background:#fff;}
-#ne-21box.zx421-sidebar .zx421-record-filter select {flex:0 0 112px;}
-#ne-21box.zx421-sidebar #zx420list {max-height:none;overflow:visible;}
-#ne-21box.zx421-sidebar #zx420list details {margin:8px 0;border:1px solid #dbe2ec;border-radius:10px;background:#fff;padding:9px;}
-#ne-21box.zx421-sidebar #zx420list pre {white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:360px;overflow:auto;}
+#ne-21box.zx421-sidebar .zx421-legend {display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#64748b;margin-bottom:10px;}
+#ne-21box.zx421-sidebar .zx421-legend span {display:inline-flex;align-items:center;gap:4px;}
+#ne-21box.zx421-sidebar .zx421-dot {width:9px;height:9px;border-radius:3px;display:inline-block;}
+#ne-21box.zx421-sidebar .zx421-dot-same {background:#86d3a4;}
+#ne-21box.zx421-sidebar .zx421-dot-different {background:#f5b26b;}
+#ne-21box.zx421-sidebar .zx421-dot-pending {background:#e8d48b;}
+#ne-21box.zx421-sidebar .zx421-dot-unanswered {background:#c7d2fe;}
+#ne-21box.zx421-sidebar .zx421-dot-none {background:#e2e8f0;}
+#ne-21box.zx421-sidebar .zx421-grid {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;}
+#ne-21box.zx421-sidebar .zx421-cell {position:relative;aspect-ratio:1;border-radius:10px;border:1px solid #dbe3f0;background:#fff;color:#475569;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:transform .12s,box-shadow .12s;font-family:inherit;}
+#ne-21box.zx421-sidebar .zx421-cell:hover {transform:translateY(-1px);box-shadow:0 4px 10px rgba(15,23,42,.1);}
+#ne-21box.zx421-sidebar .zx421-cell-same {background:#effaf3;border-color:#a7ddbd;color:#15803d;}
+#ne-21box.zx421-sidebar .zx421-cell-different {background:#fff5e8;border-color:#f3c48d;color:#b45309;}
+#ne-21box.zx421-sidebar .zx421-cell-pending {background:#fffbeb;border-color:#e9d9a1;color:#92700c;}
+#ne-21box.zx421-sidebar .zx421-cell-unanswered {background:#f4f6ff;border-color:#c7d2fe;color:#4f46e5;}
+#ne-21box.zx421-sidebar .zx421-cell-none {background:#f8fafc;border-color:#e2e8f0;color:#94a3b8;cursor:default;}
+#ne-21box.zx421-sidebar .zx421-cell-active {outline:2px solid #2563eb;outline-offset:1px;}
+#ne-21box.zx421-sidebar .zx421-chips {display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+#ne-21box.zx421-sidebar .zx421-chip {border:1px solid #dbe3f0;background:#fff;border-radius:999px;padding:5px 10px;font-size:11px;color:#475569;cursor:pointer;font-family:inherit;}
+#ne-21box.zx421-sidebar .zx421-chip.zx421-chip-on {background:#2563eb;border-color:#2563eb;color:#fff;}
+#ne-21box.zx421-sidebar .zx425-toolbar {display:flex;gap:5px;flex-wrap:wrap;margin:8px 0;}
+#ne-21box.zx421-sidebar .zx425-review-search {box-sizing:border-box;width:100%;border-radius:9px;padding:9px 12px;margin:7px 0 10px;border:1px solid #cbd5e1;background:#fff;}
+#ne-21box.zx421-sidebar .zx425-media-list {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
+#ne-21box.zx421-sidebar .zx425-media {margin:0;padding:5px;border:1px solid #dbe3f0;border-radius:7px;background:white;min-width:0;}
+#ne-21box.zx421-sidebar .zx425-media img{max-width:100%;max-height:200px;object-fit:contain;}
+#ne-21box.zx421-sidebar .zx425-media figcaption{font-size:11px;color:#64748b;}
+#ne-21box.zx421-sidebar .zx421-detail h5 {margin:0 0 6px;font-size:13px;color:#334155;}
+#ne-21box.zx421-sidebar .zx421-detail pre {white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:300px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:9px;}
 #ne-21box.zx421-sidebar .zx421-layout-control {display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 0;font-size:12px;}
 #ne-21box.zx421-sidebar .zx421-layout-control select {padding:5px 9px;background:white;border:1px solid #dbe3f0;border-radius:8px;}
 #ne-21box.zx421-sidebar .zx421-layout-control input[type=range] {width:160px;max-width:55%;}
@@ -1100,10 +1657,91 @@ var zx421 = (function () {
   #ne-21box.zx421-sidebar .zx421-resize {display:none;}
 }
 @media (prefers-reduced-motion:reduce) {#ne21Ball {transition:none!important;}}
+/* 挤压式侧栏：页面先让出侧栏宽度 + 10px 分隔槽，再把内容限制在剩余区域。 */
+html.zx421-pushed-right { margin-right: calc(var(--zx421-push, 380px) + var(--zx421-gutter, 10px)) !important; overflow-x:hidden!important; }
+html.zx421-pushed-left { margin-left: calc(var(--zx421-push, 380px) + var(--zx421-gutter, 10px)) !important; overflow-x:hidden!important; }
+html.zx421-pushed-right body, html.zx421-pushed-left body { overflow-x:hidden!important; }
+/* 页面常把顶层容器写成 100vw；限制直接子节点，避免它们钻到侧栏下面。 */
+html.zx421-pushed-right body > * { max-width: calc(100vw - var(--zx421-push, 380px) - var(--zx421-gutter, 10px)) !important; min-width:0!important; }
+html.zx421-pushed-left body > * { max-width: calc(100vw - var(--zx421-push, 380px) - var(--zx421-gutter, 10px)) !important; min-width:0!important; }
+/* 内层固定宽度容器也一起收进剩余区域，否则会出现“外层缩了、公式仍然被裁掉”。 */
+html.zx421-pushed-right body *:not(#ne-21box):not(#zx421Divider):not(#ne21Ball),
+html.zx421-pushed-left body *:not(#ne-21box):not(#zx421Divider):not(#ne21Ball) { max-width:100%!important; }
+/* 10px 分隔槽 + 居中 1px 线，页面上不再和侧栏贴成一张白纸。 */
+#zx421Divider {
+  position:fixed; top:0; bottom:0; width:var(--zx421-gutter,10px); display:none; pointer-events:none;
+  z-index:2147482999; background:#eef2f7; border-left:1px solid #e2e8f0; border-right:1px solid #e2e8f0;
+}
+#zx421Divider::after { content:''; position:absolute; top:0; bottom:0; left:50%; width:1px; background:#cbd5e1; }
+html.zx421-pushed-right #zx421Divider { display:block; right:var(--zx421-push,380px); }
+html.zx421-pushed-left #zx421Divider { display:block; left:var(--zx421-push,380px); }
         `;
         (d.head || d.documentElement).appendChild(e);
     }
 
+    function applyPush() {
+        // 原生扩展侧栏会真的缩小页面 viewport，这里绝不能再加一层网页内挤压。
+        if (zxExtMode()) return;
+        var d=doc();
+        var root=(d&&d.documentElement)||document.documentElement;
+        var body=(d&&d.body)||document.body;
+        var win=(d&&d.defaultView)||window;
+        var w=clamp(safeNum(get('width',380),380),320,480);
+        var side=get('side','right');
+        var wide=(win.innerWidth||0)>=960;
+        var on=getMode()==='sidebar'&&wide;
+        var gap=10;
+        var px=w+'px';
+        var totalPx=(w+gap)+'px';
+        try {
+            if(on){
+                root.style.setProperty('--zx421-push',px);
+                root.style.setProperty('--zx421-gutter',gap+'px');
+                root.style.setProperty('width','auto','important');
+                root.style.setProperty('min-width','0','important');
+                root.style.setProperty('overflow-x','hidden','important');
+                if(body){
+                    body.style.setProperty('--zx421-push',px);
+                    body.style.setProperty('--zx421-gutter',gap+'px');
+                    body.style.setProperty('width','auto','important');
+                    body.style.setProperty('min-width','0','important');
+                    body.style.setProperty('max-width','none','important');
+                    body.style.setProperty('overflow-x','hidden','important');
+                }
+                if(side==='right'){
+                    root.style.setProperty('margin-right',totalPx,'important');
+                    root.style.setProperty('margin-left','0px','important');
+                }else{
+                    root.style.setProperty('margin-left',totalPx,'important');
+                    root.style.setProperty('margin-right','0px','important');
+                }
+            }else{
+                root.style.removeProperty('--zx421-push');
+                root.style.removeProperty('--zx421-gutter');
+                root.style.removeProperty('width');
+                root.style.removeProperty('min-width');
+                root.style.removeProperty('overflow-x');
+                root.style.removeProperty('margin-right');
+                root.style.removeProperty('margin-left');
+                if(body){
+                    body.style.removeProperty('--zx421-push');
+                    body.style.removeProperty('--zx421-gutter');
+                    body.style.removeProperty('width');
+                    body.style.removeProperty('min-width');
+                    body.style.removeProperty('max-width');
+                    body.style.removeProperty('overflow-x');
+                }
+            }
+        } catch(_) { }
+        root.classList.toggle('zx421-pushed-right',on&&side==='right');
+        root.classList.toggle('zx421-pushed-left',on&&side==='left');
+        var sig=(on?side+w:'off')+'|'+(wide?'w':'n');
+        if(sig!==lastPushSig){
+            lastPushSig=sig;
+            try{ logger('侧栏挤压：'+(on?('开 '+w+'px + '+gap+'px 分隔槽 · '+(side==='right'?'右侧':'左侧')):'关（窄屏或已收起）'),'gray'); }catch(_) {}
+        }
+    }
+    function onViewport() { positionBall(); applyPush(); }
     function setWidth(width) {
         var v=clamp(safeNum(width,380),320,480);
         var box=byId('ne-21box');
@@ -1111,6 +1749,7 @@ var zx421 = (function () {
         var size=byId('zx421Width');if(size)size.value=String(v);
         var lab=byId('zx421WidthLabel');if(lab)lab.textContent=v+' px';
         set('width',v);
+        applyPush();
     }
     function setSide(side) {
         side=SIDES.indexOf(side)>=0?side:'right';
@@ -1118,6 +1757,7 @@ var zx421 = (function () {
         var sel=byId('zx421Side');if(sel)sel.value=side;
         set('side',side);
         positionBall();
+        applyPush();
     }
     function positionBall() {
         var b=byId('ne21Ball');if(!b)return;
@@ -1129,6 +1769,11 @@ var zx421 = (function () {
     function ensureBall() {
         var d=doc();
         css(d); // 看门狗早于主面板执行时，悬浮球也不会闪现成原生按钮。
+        var dv=d.getElementById('zx421Divider');
+        if(!dv){
+            dv=d.createElement('div');dv.id='zx421Divider';dv.setAttribute('aria-hidden','true');
+            (d.body || d.documentElement).appendChild(dv);
+        }
         var b=d.getElementById('ne21Ball');
         if(b) { if (!b.dataset.zx421Ready) wireBall(b);return b; }
         b=d.createElement('button');b.type='button';b.id='ne21Ball';b.textContent='知';
@@ -1186,6 +1831,7 @@ var zx421 = (function () {
         if(box){box.style.display=mode==='sidebar'?'flex':'none';box.setAttribute('aria-hidden',mode==='ball'?'true':'false');}
         if(ball){ball.classList.toggle('zx421-visible',mode==='ball');ball.setAttribute('aria-hidden',mode==='ball'?'false':'true');positionBall();}
         try{localStorage.setItem('ZhixingSetting.showBox',mode==='ball'?'hide':'show');}catch(_){}
+        applyPush();
         refresh();
     }
     function toggle() {setMode(get('mode','sidebar')==='sidebar'?'ball':'sidebar');}
@@ -1206,7 +1852,7 @@ var zx421 = (function () {
         var paused=false;try{paused=localStorage.getItem('ZhixingSetting.isPaused')==='true';}catch(_){}
         var started=window.__gptRunStarted===true||window.__gptWantStart===true;
         var s=(typeof zx420!=='undefined'&&zx420.getReviewState)?zx420.getReviewState():{busy:false,count:0,total:0};
-        var state=s.busy?'正在核对':paused?'已暂停':started?'运行中':'待启动';
+        var state=s.busy?(s.paused?'核对已暂停':'正在核对'):paused?'已暂停':started?'运行中':'待启动';
         var lbl=byId('zx421StatusLabel');if(lbl)lbl.textContent=state;
         var main=byId('zx421MainAction');if(main)main.textContent=!started?'▶ 开始当前任务':paused?'▶ 继续':'Ⅱ 暂停';
         var cnt=byId('zx421ProgressText');if(cnt)cnt.textContent=(s.total?s.count+' / '+s.total+' 题':'核对尚未开始');
@@ -1214,6 +1860,13 @@ var zx421 = (function () {
         var ball=byId('ne21Ball');if(ball)ball.classList.toggle('zx421-working',!!s.busy);
         var fail=0;try{fail=(window.__gptFails||[]).length;}catch(_){}
         var chip=byId('zx421BallBadge');if(chip){chip.textContent=fail>99?'99+':String(fail);chip.style.display=fail?'block':'none';}
+        var course=byId('zx425CourseStatus');
+        if(course){
+            var media=document.querySelector('video,audio');
+            var videoInfo=media ? (media.paused?'已暂停':'播放中')+' · '+Math.floor(media.currentTime||0)+'s / '+(isFinite(media.duration)?Math.floor(media.duration)+'s':'时长未知') : '当前页面未检测到视频/音频';
+            course.textContent=(started?(paused?'任务已暂停':'脚本已启动'):'任务尚未启动')+'\n'+videoInfo;
+        }
+        try{ applyPush(); }catch(_){}
     }
     function observeLog(msg) {
         var recent=byId('zx421Recent');
@@ -1222,12 +1875,28 @@ var zx421 = (function () {
         if(text.length>140)text=text.slice(0,140)+'…';
         recent.textContent=text||'暂无活动';
     }
-    function summary(arr) {
-        var same=0,diff=0,pending=0;
-        (arr||[]).forEach(r=>{if(r.status==='same')same++;else if(r.status==='different')diff++;else pending++;});
-        for(const [key,value] of [['zx421Same',same],['zx421Different',diff],['zx421Pending',pending]]){
-            var e=byId(key);if(e)e.textContent=String(value);
+    function buildGrid(host, records, onPick) {
+        if (!host) return;
+        var d = doc();
+        host.textContent = '';
+        if (!records || !records.length) {
+            var p = d.createElement('p'); p.className = 'zx421-muted';
+            p.textContent = '还没有核对记录，先点「只读核对整卷」。';
+            host.appendChild(p);
+            return;
         }
+        var grid = d.createElement('div'); grid.className = 'zx421-grid';
+        records.forEach(function (r) {
+            var q = r.question || {};
+            var b = d.createElement('button'); b.type = 'button';
+            b.className = 'zx421-cell zx421-cell-' + (r.status || 'none');
+            b.textContent = String(q.id == null || q.id === '' ? '?' : q.id);
+            b.title = '第 ' + (q.id || '?') + ' 题 · ' + ({ same: '一致', different: '不一致', pending: '待复核', unanswered: '未作答' }[r.status] || r.status || '未核对');
+            if (typeof onPick === 'function') b.addEventListener('click', function () { onPick(r, b); });
+            else b.style.cursor = 'default';
+            grid.appendChild(b);
+        });
+        host.appendChild(grid);
     }
     function mount() {
         var box=byId('ne-21box');if(!box)return;
@@ -1243,12 +1912,34 @@ var zx421 = (function () {
         if(nav){nav.addEventListener('click',function(e){
             var btn=e.target.closest('[data-zx421tab]');if(!btn)return;
             var t=btn.dataset.zx421tab;
-            if(t==='records'&&typeof zx420!=='undefined')zx420.showRecords();
+            if(t==='review'&&typeof zx420!=='undefined')zx420.showRecords();
             else openTab(t);
         });}
         var closer=box.querySelector('#ne-21close');
         if(closer){closer.title='收起成悬浮球';closer.setAttribute('aria-label','收起成悬浮球');}
         var main=byId('zx421MainAction');if(main)main.addEventListener('click',function(){var btn=byId('ne-21pause');if(btn)btn.click();setTimeout(refresh,30);});
+        var courseStart=byId('zx425CourseStart');
+        if(courseStart)courseStart.addEventListener('click',function(){
+            var paused=localStorage.getItem('ZhixingSetting.isPaused')==='true';
+            var started=window.__gptRunStarted===true||window.__gptWantStart===true;
+            if(!started||paused){var b=byId('ne-21pause');if(b)b.click();}
+            refresh();
+        });
+        var coursePause=byId('zx425CoursePause');
+        if(coursePause)coursePause.addEventListener('click',function(){
+            var started=window.__gptRunStarted===true||window.__gptWantStart===true;
+            var paused=localStorage.getItem('ZhixingSetting.isPaused')==='true';
+            if(started&&!paused){var b=byId('ne-21pause');if(b)b.click();}
+            refresh();
+        });
+        var courseRate=byId('zx425CourseRate'),legacyRate=byId('ZhixingSetting.rate');
+        if(courseRate){
+            courseRate.value=legacyRate&&legacyRate.value||localStorage.getItem('ZhixingSetting.rate')||'1';
+            courseRate.addEventListener('change',function(){
+                if(legacyRate){legacyRate.value=courseRate.value;legacyRate.dispatchEvent(new Event('change',{bubbles:true}));}
+                try{localStorage.setItem('ZhixingSetting.rate',courseRate.value);}catch(_){}
+            });
+        }
         var sideSel=byId('zx421Side');if(sideSel){sideSel.value=side;sideSel.addEventListener('change',e=>setSide(e.target.value));}
         var width=byId('zx421Width');if(width)width.addEventListener('input',e=>setWidth(e.target.value));
         var resize=box.querySelector('.zx421-resize');
@@ -1266,19 +1957,19 @@ var zx421 = (function () {
         var desired=get('mode','');
         if(!desired){desired=(localStorage.getItem('ZhixingSetting.boxCollapsed')==='true'||localStorage.getItem('ZhixingSetting.showBox')==='hide')?'ball':'sidebar';}
         var initialTab=get('tab','control');
-        openTab(TABS.indexOf(initialTab)>=0?initialTab:'control');
+        var safeTab=TABS.indexOf(initialTab)>=0?initialTab:'control';
+        openTab(safeTab);
+        if(safeTab==='review'&&typeof zx420!=='undefined'){ try{ zx420.showRecords(); }catch(_){} }
         setMode(desired);
         var win=activeDocument.defaultView||window;
-        win.addEventListener('resize',positionBall);
+        win.removeEventListener('resize',onViewport);
+        win.addEventListener('resize',onViewport);
         if(polling)clearInterval(polling);
         polling=setInterval(function(){if(!box.isConnected){clearInterval(polling);polling=null;return;}refresh();},1300);
-        try {
-            if(typeof zx420!=='undefined' && typeof zx420.getReviewRecords==='function')
-                zx420.getReviewRecords().then(function(arr){if(box.isConnected)summary(arr);}).catch(function(){});
-        }catch(_){}
+        applyPush();
         refresh();
     }
-    return {mount,ensureBall,setMode,toggle,getMode,openTab,refresh,observeLog,summary,setWidth,setSide};
+    return {mount,ensureBall,setMode,toggle,getMode,openTab,refresh,observeLog,buildGrid,setWidth,setSide};
 })();
 
 
@@ -2628,7 +3319,7 @@ function showBox() {
             <div id="ne-21box">
                 <div class="ne21-header" title="知行侧栏 · Alt+Z 切换悬浮球">
                     <span class="zx421-resize" title="拖动调整侧栏宽度" aria-hidden="true"></span>
-                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手</h3>
+                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手 <small style="font-size:10px;opacity:.62;white-space:nowrap">4.2.7 侧栏版</small></h3>
                     <div class="ne21-actions">
                         <span id="ne21FailChip" class="ne21-kbd" style="display:none;color:#dc2626;" title="本次被跳过、建议手动补的题目数"></span>
                         
@@ -2656,18 +3347,42 @@ function showBox() {
                     </details>
                     <div id="ne-21thinking"></div>
                   </section>
-                  <section class="zx421-page" data-tab="review" aria-label="整卷核对">
-                    <h4 class="zx421-section-title">整卷核对</h4>
-                    <div class="zx421-metrics">
-                      <div class="zx421-metric"><strong id="zx421Same">0</strong><span>一致</span></div>
-                      <div class="zx421-metric"><strong id="zx421Different">0</strong><span>不一致</span></div>
-                      <div class="zx421-metric"><strong id="zx421Pending">0</strong><span>存疑 / 未答</span></div>
+                  <section class="zx421-page" data-tab="course" aria-label="刷课">
+                    <h4 class="zx421-section-title">课程学习</h4>
+                    <div class="zx421-card">
+                      <p id="zx425CourseStatus" class="zx421-note">等待获取当前页面的视频或章节状态</p>
+                      <button type="button" class="zx421-main-btn" id="zx425CourseStart">▶ 开始 / 继续</button>
+                      <button type="button" class="zx421-chip" id="zx425CoursePause">暂停运行</button>
                     </div>
-                    <div id="zx421ReviewControls" class="zx421-controls"></div>
-                    <div class="zx421-card"><p class="zx421-muted">只读核对不会修改已选答案，也不会自动交卷。支持考试预览页，其他页面请使用原有功能。</p></div>
+                    <div class="zx421-card">
+                      <h4 class="zx421-section-title">视频与音频</h4>
+                      <label class="zx421-layout-control">播放倍速
+                        <select id="zx425CourseRate">
+                          <option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+                          <option value="3">3×</option><option value="4">4×</option><option value="6">6×</option>
+                          <option value="8">8×</option><option value="16">16×</option>
+                        </select>
+                      </label>
+                      <p class="zx421-muted">这里使用原脚本的课程任务逻辑，收起侧栏不会中断任务。课程自动跳转仍按原有规则运行。</p>
+                    </div>
+                    <div class="zx421-card">
+                      <h4 class="zx421-section-title">刷课运行说明</h4>
+                      <p class="zx421-note">章节导航、播放速度和文档阅读由原有模块管理。课程页显示实时媒体状态，不伪造完成进度。</p>
+                    </div>
                   </section>
-                  <section class="zx421-page" data-tab="records" aria-label="核对记录">
-                    <div id="zx421RecordsPane"><div class="zx421-muted">点击下方「记录」加载核对历史。</div></div>
+                  <section class="zx421-page" data-tab="review" aria-label="核对">
+                    <div id="zx421ReviewControls" class="zx421-controls"></div>
+                    <div class="zx421-card">
+                      <div class="zx421-legend">
+                        <span><i class="zx421-dot zx421-dot-same"></i>一致</span>
+                        <span><i class="zx421-dot zx421-dot-different"></i>不一致</span>
+                        <span><i class="zx421-dot zx421-dot-pending"></i>待复核</span>
+                        <span><i class="zx421-dot zx421-dot-unanswered"></i>未作答</span>
+                        <span><i class="zx421-dot zx421-dot-none"></i>未核对</span>
+                      </div>
+                      <div id="zx421ReviewPane"><p class="zx421-muted">还没有核对记录。点上面的「只读核对整卷」开始，结果会按题号显示在这里。</p></div>
+                    </div>
+                    <div class="zx421-card"><p class="zx421-muted">只读核对不会修改已选答案，也不会自动交卷。记录只存在本地浏览器。</p></div>
                   </section>
                   <section class="zx421-page" data-tab="settings" aria-label="设置">
                     <h4 class="zx421-section-title">侧栏外观</h4>
@@ -2700,14 +3415,14 @@ function showBox() {
                 </div>
                 <nav class="zx421-footer" aria-label="知行页面导航">
                   <button type="button" class="zx421-tab" data-zx421tab="control" aria-selected="true"><span class="zx421-tab-icon">⌂</span><span>控制</span></button>
+                  <button type="button" class="zx421-tab" data-zx421tab="course" aria-selected="false"><span class="zx421-tab-icon">▷</span><span>刷课</span></button>
                   <button type="button" class="zx421-tab" data-zx421tab="review" aria-selected="false"><span class="zx421-tab-icon">◎</span><span>核对</span></button>
-                  <button type="button" class="zx421-tab" data-zx421tab="records" aria-selected="false"><span class="zx421-tab-icon">▤</span><span>记录</span></button>
                   <button type="button" class="zx421-tab" data-zx421tab="settings" aria-selected="false"><span class="zx421-tab-icon">⚙</span><span>设置</span></button>
                 </nav>
             </div>
         `;
         $(box_html).appendTo('body');
-        try { zx421.mount(); zx420.attachPanel(); } catch (e) { console.warn('[知行4.2.1] 侧栏初始化失败',e); }
+        try { zx421.mount(); zx420.attachPanel(); } catch (e) { console.warn('[知行] 侧栏初始化失败',e); }
         try { if (isMobileUI()) { $('#ne-21box').addClass('ne21-mobile'); } } catch (_) { }
         try { $(document).off('click.ne21redo').on('click.ne21redo', '#ne21RedoBtn', function (e) { e.preventDefault(); e.stopPropagation(); gptRedoAll(); }); } catch (_) { }
 
@@ -2726,9 +3441,9 @@ function showBox() {
                 $b.attr('title', '运行中，点击暂停');
             }
         }
-        $('#ne-21box').on('mousedown', '#ne-21pause', function (e) {
+        $('#ne-21box').off('mousedown.ne21pause click.ne21pause').on('mousedown.ne21pause', '#ne-21pause', function (e) {
             e.stopPropagation();
-        }).on('click', '#ne-21pause', function (e) {
+        }).on('click.ne21pause', '#ne-21pause', function (e) {
             e.stopPropagation();
             var _started = window.__gptRunStarted === true || window.__gptWantStart === true || !gptManualStartOn();
             if (!_started) {
@@ -2760,9 +3475,9 @@ function showBox() {
 
         try { gptRefreshPauseBtn(); } catch (_) { }
 
-        $('#ne-21close').on('click', function(e) {
+        $('#ne-21close').off('click.ne21close').on('click.ne21close', function(e) {
             e.stopPropagation();
-            try { zx421.setMode('ball'); } catch (err) { console.warn('[知行4.2.1] 收起失败',err); }
+            try { zx421.setMode('ball'); } catch (err) { console.warn('[知行] 收起失败',err); }
         });
 
         (function () {
@@ -2974,7 +3689,17 @@ function showBox() {
                 OWN_API.vision = $('#ne21ApiVision').is(':checked') ? 'auto' : false;
                 OWN_API.models = [model];
                 OWN_API.enabled = true;
-                try { GM_setValue('OWN_API_CONFIG', { baseUrl: base, apiKey: key, model: model, models: (Array.isArray(OWN_API.availableModels) && OWN_API.availableModels.length) ? OWN_API.availableModels : [model], enabled: true, authStyle: OWN_API.authStyle, vision: OWN_API.vision, effort: OWN_API.effort }); } catch (_) { }
+                try {
+                    // 保留用户在控制台配的 baseUrls / query / extraHeaders / maxTokens / maxImages 等高级字段。
+                    var _prevCfg = {};
+                    try { _prevCfg = GM_getValue('OWN_API_CONFIG', {}) || {}; } catch (_) { _prevCfg = {}; }
+                    var _nextCfg = Object.assign({}, _prevCfg, {
+                        baseUrl: base, apiKey: key, model: model,
+                        models: (Array.isArray(OWN_API.availableModels) && OWN_API.availableModels.length) ? OWN_API.availableModels : [model],
+                        enabled: true, authStyle: OWN_API.authStyle, vision: OWN_API.vision, effort: OWN_API.effort
+                    });
+                    GM_setValue('OWN_API_CONFIG', _nextCfg);
+                } catch (_) { }
                 try {
                     var $ms = $('#modelSelect');
                     if ($ms.length) { $ms.empty().append($('<option>').attr('value', model).text(model)).val(model); }
@@ -4034,7 +4759,7 @@ function startDoPhoneTimu(index, TimuList) {
         }
     }
 
-    _currentQuestionMeta = { index: index, total: TimuList.length, typeName: typeName }
+    _currentQuestionMeta = { index: index, total: TimuList.length, typeName: typeName, node:TimuList[index] }
     switch (_type) {
         case 0: {
 
@@ -4044,9 +4769,9 @@ function startDoPhoneTimu(index, TimuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
+            // Keep the array: modulus |z| must not split an option.
 
-            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers.split('|') })
+            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers })
 
             for (let i = 0; i < _answerTmpArr.length; i++) {
                 if ($(_answerTmpArr[i]).attr('aria-label')) {
@@ -4099,8 +4824,8 @@ function startDoPhoneTimu(index, TimuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers.split('|'), answer_format: "用'|'分割多个答案" })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers, answer_format: "用'|'分割多个答案" })
 
             for (let i = 0; i < _answerTmpArr.length; i++) {
                 if ($(_answerTmpArr[i]).attr('aria-label')) {
@@ -4910,7 +5635,7 @@ function doQuizPractice(index, questions, state) {
         return
     }
     var typeInfo = getQuizPracticeType($item)
-    _currentQuestionMeta = { index: index, total: questions.length, typeName: typeInfo.name }
+    _currentQuestionMeta = { index: index, total: questions.length, typeName: typeInfo.name, node:questions[index] }
     if (typeInfo.type < 0) {
         state.failed++
         logger('第' + (index + 1) + '题题型未识别，已跳过', 'red')
@@ -5056,7 +5781,7 @@ function doHomeWork(index, TiMuList) {
         logger('检测到复合大题（含有 ' + $subQuestions.length + ' 个子题），开始处理子题...', 'blue');
         let parentQuestion = tidyQuestion($(TiMuList[index]).find('h3.mark_name').html() || '');
         let currentTypeName = $(TiMuList[index]).attr('typename') || '阅读理解';
-        _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: currentTypeName };
+        _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: currentTypeName, node:TiMuList[index] };
         processSubQuestions(0, $subQuestions, parentQuestion, () => setting.time, () => { doHomeWork(index + 1, TiMuList) });
         return;
     }
@@ -5093,7 +5818,7 @@ function doHomeWork(index, TiMuList) {
         写作题: 5,
         翻译题: 6
     })[typeName]
-    _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: typeName }
+    _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: typeName, node:TiMuList[index] }
     let _questionFull = $(TiMuList[index]).find('.mark_name').html()
     let _question = tidyQuestion(_questionFull).replace(/^[(].*?[)]/, '').trim()
     let _a = []
@@ -5134,8 +5859,8 @@ function doHomeWork(index, TiMuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers.split('|') })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers })
 
             for (let i = 0; i < _answerTmpArr.length; i++) {
                 if (($(_answerTmpArr[i]).parent().find('span').attr('class') || '').indexOf('check_answer') == -1) {
@@ -5199,8 +5924,8 @@ function doHomeWork(index, TiMuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers.split('|'), answer_format: "用'|'分割多个答案" })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers, answer_format: "用'|'分割多个答案" })
 
             for (let i = 0; i < _answerTmpArr.length; i++) {
                 if (($(_answerTmpArr[i]).parent().find('span').attr('class') || '').indexOf('check_answer') == -1) {
@@ -5537,7 +6262,7 @@ function missonExam() {
         let $curLi = $('.mark_table .mark_li_list li.active, .mark_table .mark_li_list li.current')
         if ($curLi.length) _examCurIdx = parseInt($curLi.text().trim()) - 1
     } catch (_) {}
-    _currentQuestionMeta = { index: isFinite(_examCurIdx) ? _examCurIdx : null, total: null, typeName: typeName }
+    _currentQuestionMeta = { index: isFinite(_examCurIdx) ? _examCurIdx : null, total: null, typeName: typeName, node:$_examtable[0] }
     let _question = tidyQuestion(_questionFull.replace(/[(].*?分[)]/, '').replace(/^\s*/, ''))
     let $_ansdom = $_examtable.find('#submitTest').find('.stem_answer')
 
@@ -5545,7 +6270,7 @@ function missonExam() {
     if ($subQuestions && $subQuestions.length > 0) {
         logger('检测到复合大题（含有 ' + $subQuestions.length + ' 个子题），开始处理子题...', 'blue');
         let parentQuestion = tidyQuestion($_examtable.find('h3.mark_name').html() || '');
-        _currentQuestionMeta = { index: _examCurIdx, total: null, typeName: typeName || '阅读理解' };
+        _currentQuestionMeta = { index: _examCurIdx, total: null, typeName: typeName || '阅读理解', node:$_examtable[0] };
         processSubQuestions(0, $subQuestions, parentQuestion, () => setting.time, () => { toNextExam() });
         return;
     }
@@ -5619,8 +6344,8 @@ function missonExam() {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers.split('|') })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers })
             getAnswer(_qType, _question).then((agrs) => {
                 $.each(_answerTmpArr, (i, t) => {
                     _a.push(tidyStr($(t).html()))
@@ -5688,8 +6413,8 @@ function missonExam() {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers.split('|'), answer_format: "用'|'分割多个答案" })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers, answer_format: "用'|'分割多个答案" })
             getAnswer(_qType, _question).then((agrs) => {
                 if (localStorage.getItem('ZhixingSetting.alterTitle') === 'true') {
 
@@ -6090,7 +6815,7 @@ function doExamPreview(index, TiMuList) {
         logger('检测到复合大题（含有 ' + $subQuestions.length + ' 个子题），开始处理子题...', 'blue');
         let parentQuestion = tidyQuestion($(TiMuList[index]).find('h3.mark_name').html() || '');
         let currentTypeName = $(TiMuList[index]).attr('typename') || '阅读理解';
-        _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: currentTypeName };
+        _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: currentTypeName, node:TiMuList[index] };
         processSubQuestions(0, $subQuestions, parentQuestion, getExamPreviewDelay, () => { doExamPreview(index + 1, TiMuList) });
         return;
     }
@@ -6118,7 +6843,7 @@ function doExamPreview(index, TiMuList) {
         setTimeout(function () { doExamPreview(index + 1, TiMuList) }, 30)
     }
 
-    _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: typeName }
+    _currentQuestionMeta = { index: index, total: TiMuList.length, typeName: typeName, node:TiMuList[index] }
 
     if (_type === undefined) {
         logger(prefix + '无法识别题型(' + typeName + ')，跳过此题', 'red')
@@ -6479,9 +7204,33 @@ function buildPrompt(opts) {
     let payloadObj = {}
     if (opts.type) payloadObj.type = String(opts.type)
     if (opts.answer_format) payloadObj.answer_format = String(opts.answer_format)
-    payloadObj.question = q
+    payloadObj.question = q;
     if (Array.isArray(opts.options) && opts.options.length > 0) {
-        payloadObj.options = opts.options.map(function (s) { return String(s == null ? '' : s).trim() })
+        payloadObj.options = opts.options.map(function (s) { return String(s == null ? '' : s).trim() });
+    }
+    // Normal answering and read-only review now share the same DOM normalizer.
+    // Prefer a LIVE question node explicitly attached to the current task, never a guessed global selector.
+    try {
+        var liveNode = opts.node || (_currentQuestionMeta && _currentQuestionMeta.node);
+        if (liveNode && typeof zx420 !== 'undefined' && zx420.extractQuestionData) {
+            var rich = zx420.extractQuestionData(liveNode, String((_currentQuestionMeta && _currentQuestionMeta.index || 0) + 1), '');
+            var baseText = String(q).replace(/<[^>]*>/g,' ').replace(/\s+/g,'').replace(/[^\p{L}\p{N}]/gu,'');
+            var richText = String(rich&&rich.text||'').replace(/\s+/g,'').replace(/[^\p{L}\p{N}]/gu,'');
+            var sample = baseText.slice(0,Math.min(10,baseText.length));
+            var sameQuestion = sample.length>=5 && richText.includes(sample);
+            if (!sameQuestion && baseText.length>=8) sameQuestion = richText.length>=8 && baseText.includes(richText.slice(0,8));
+            if (sameQuestion && rich && rich.question && /<img\b|<svg\b|mjx-|\bmath\b|katex|data-mathml/i.test(rich.question)) {
+                payloadObj.question = q + '\n[原始题干富媒体]\n' + rich.question;
+            }
+            if (sameQuestion && rich && rich.options.length && payloadObj.options && payloadObj.options.length === rich.options.length) {
+                payloadObj.options = payloadObj.options.map(function (str,i) {
+                    var richOpt = rich.options[i];
+                    return /<img\b|<svg\b|mjx-|katex|data-mathml/i.test(richOpt.html || '') ? richOpt.html : str;
+                });
+            }
+        }
+    } catch (e) {
+        try { logger('富媒体采集提示：'+e.message,'orange'); } catch (_) {}
     }
     let payload = JSON.stringify(payloadObj, null, 2)
     let display = q
@@ -6576,7 +7325,7 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
     }
 
     let currentTypeName = $subQuestions.parent().parent().attr('typename') || '阅读理解';
-    _currentQuestionMeta = { index: _currentQuestionMeta ? _currentQuestionMeta.index : null, total: _currentQuestionMeta ? _currentQuestionMeta.total : null, typeName: currentTypeName + ' 第' + (subIndex + 1) + '小题' };
+    _currentQuestionMeta = { index: _currentQuestionMeta ? _currentQuestionMeta.index : null, total: _currentQuestionMeta ? _currentQuestionMeta.total : null, typeName: currentTypeName + ' 第' + (subIndex + 1) + '小题', node:$subQ[0] };
 
     if (subType === 0 || subType === 3) {
         let optionTexts = [];
@@ -6695,8 +7444,9 @@ function gptApiConfigured() {
         if (!OWN_API || !OWN_API.enabled) return false;
         var eps = ownApiEndpoints();
         if (!eps.length) return false;
-        if (String(OWN_API.apiKey || '').indexOf('REPLACE') !== -1) return false;
-        if (!String(OWN_API.model || '').trim()) return false;
+        var noAuth = String(OWN_API.authStyle || 'bearer') === 'none';
+        if ((!OWN_API.apiKey && !noAuth) || String(OWN_API.apiKey || '').indexOf('REPLACE') !== -1) return false;
+        if (!String(OWN_API.model || 'deepseek-flash').trim()) return false;
         return true;
     } catch (_) { return false; }
 }
@@ -6925,6 +7675,8 @@ function getAnswer(_t, _q, retryCount = 0, _skipBank) {
                     requestCompleted = true;
                     clearTimeout(longWaitTimer);
                     updateLogEntry($thinkingLog, "接口出错：" + (ownErr && ownErr.message ? ownErr.message : ownErr), "red");
+                    // 缺图/选项不全不是网络抖动，重试同一份 DOM 只会重复烧钱。
+                    if (ownErr && (ownErr.code === 'MEDIA_INCOMPLETE' || ownErr.code === 'OPTIONS_INCOMPLETE' || ownErr.code === 'MEDIA_PLACEHOLDER_ONLY')) { reject({ "c": 0 }); return; }
                     if (retryCount >= _maxRetries) { reject({ "c": 666 }); return; }
                     getAnswer(_t, _q, retryCount + 1, _skipBank).then(resolve).catch(reject);
                 });
@@ -7083,7 +7835,7 @@ function startDoWork(index, doms, c, TiMuList) {
         简答题: 4, 简答: 4, 问答题: 4, 名词解释: 4, 论述题: 4, 论述: 4,
         计算题: 4, 计算: 4, 分录题: 4, 资料题: 4, 作图题: 4, 其他: 4, 其它: 4, 阅读理解: 4, 阅读: 4, 阅读题: 4, 理解题: 4, 完形填空: 4, 完形: 4, 综合题: 4
     }[typeName]
-    _currentQuestionMeta = { index: c, total: TiMuList.length, typeName: typeName }
+    _currentQuestionMeta = { index: c, total: TiMuList.length, typeName: typeName, node:TiMuList[c] }
     let _a = []
     let _answerTmpArr
 
@@ -7136,8 +7888,8 @@ function startDoWork(index, doms, c, TiMuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers.split('|') })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers })
             $.each(_answerTmpArr, (i, t) => {
                 _a.push(tidyStr($(t).html()))
             })
@@ -7172,8 +7924,8 @@ function startDoWork(index, doms, c, TiMuList) {
                 var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
-            mergedAnswers = mergedAnswers.join("|");
-            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers.split('|'), answer_format: "用'|'分割多个答案" })
+            // Keep the array: modulus |z| must not split an option.
+            _question = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers, answer_format: "用'|'分割多个答案" })
             getAnswer(_TimuType, _question).then((agrs) => {
                 if (localStorage.getItem('ZhixingSetting.alterTitle') === 'true') {
 
@@ -7400,4 +8152,138 @@ function base64ToUint8Array(base64) {
     try { window.addEventListener('load', function () { setTimeout(ensurePanel, 300); }); } catch (_) { }
     try { document.addEventListener('visibilitychange', function () { if (!document.hidden) setTimeout(ensurePanel, 500); }); } catch (_) { }
     try { window.addEventListener('focus', function () { setTimeout(ensurePanel, 300); }); } catch (_) { }
+})();
+
+/* ==== 4.2.7 原生扩展侧栏桥：只由扩展侧栏通过 postMessage 调用 ==== */
+(function () {
+    'use strict';
+    if (!zxExtMode()) return;
+    var seq = 0;
+    function reply(id, ok, data) {
+        try { window.postMessage({ __zxExt: true, source: 'zx-page', id: id, ok: !!ok, data: data || null }, '*'); } catch (_) { }
+    }
+    function status() {
+        var started = window.__gptRunStarted === true || window.__gptWantStart === true;
+        var paused = false;
+        try { paused = localStorage.getItem('ZhixingSetting.isPaused') === 'true'; } catch (_) { }
+        var review = { busy: false, paused: false, count: 0, total: 0 };
+        try { if (typeof zx420 !== 'undefined' && zx420.getReviewState) review = zx420.getReviewState(); } catch (_) { }
+        var log = '';
+        try {
+            var el = document.getElementById('ne-21log');
+            if (el) log = String(el.textContent || '').replace(/\s+/g, ' ').slice(-4000);
+        } catch (_) { }
+        var rate = '1';
+        try { rate = localStorage.getItem('ZhixingSetting.rate') || '1'; } catch (_) { }
+        var state = review.busy ? (review.paused ? '核对暂停' : '正在核对') : (paused ? '已暂停' : (started ? '运行中' : '待启动'));
+        var mediaText = '当前页面未检测到视频/音频';
+        try {
+            var media = document.querySelector('video,audio');
+            if (media) mediaText = (media.paused ? '已暂停' : '播放中') + ' · ' + Math.floor(media.currentTime || 0) + 's';
+        } catch (_) { }
+        return { state: state, started: !!started, paused: !!paused, review: review, rate: rate,
+            media: mediaText, log: log, url: location.href, title: document.title,
+            examPreview: location.pathname.indexOf('/exam/preview') !== -1 };
+    }
+    function api() {
+        return { baseUrl: OWN_API.baseUrl || '', model: OWN_API.model || '',
+            authStyle: OWN_API.authStyle || 'bearer',
+            hasKey: !!(OWN_API.apiKey && String(OWN_API.apiKey).indexOf('REPLACE') === -1),
+            vision: OWN_API.vision !== false, effort: OWN_API.effort || 'low' };
+    }
+    function counts() {
+        if (typeof zx420 === 'undefined' || !zx420.getReviewRecords) return Promise.resolve({ same: 0, different: 0, pending: 0, unanswered: 0, total: 0 });
+        return zx420.getReviewRecords().then(function (arr) {
+            var latest = zx420.latestRecords(arr);
+            var out = { same: 0, different: 0, pending: 0, unanswered: 0, total: latest.length };
+            latest.forEach(function (r) { if (out[r.status] != null) out[r.status]++; else out.pending++; });
+            return out;
+        });
+    }
+    function toggle() {
+        var b = document.getElementById('ne-21pause');
+        if (!b) throw new Error('页面内控制按钮尚未就绪，请刷新后重试');
+        b.click();
+        return status();
+    }
+    function setRate(v) {
+        var rate = String(v || '1');
+        try { localStorage.setItem('ZhixingSetting.rate', rate); } catch (_) { }
+        var sel = document.getElementById('ZhixingSetting.rate');
+        if (sel) {
+            sel.value = rate;
+            try { sel.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) { }
+        }
+        return { rate: rate };
+    }
+    function setApi(p) {
+        p = p || {};
+        var base = String(p.baseUrl || '').trim().replace(/\/+$/, '');
+        if (!/^https?:\/\//i.test(base)) throw new Error('地址需以 http(s):// 开头');
+        var style = String(p.authStyle || OWN_API.authStyle || 'bearer');
+        var key = typeof p.apiKey === 'string' ? p.apiKey.trim() : '';
+        if (key && key.indexOf('REPLACE') !== -1) key = '';
+        if (!key) {
+            var old = String(OWN_API.apiKey || '');
+            key = old.indexOf('REPLACE') === -1 ? old : '';
+        }
+        if (!key && style !== 'none') throw new Error('Key 不能为空（无需认证请选 none）');
+        var model = String(p.model || '').trim();
+        if (!model) throw new Error('模型不能为空');
+        OWN_API.baseUrl = base;
+        OWN_API.apiKey = key;
+        OWN_API.model = model;
+        OWN_API.authStyle = style;
+        OWN_API.vision = p.vision ? 'auto' : false;
+        OWN_API.effort = String(p.effort || OWN_API.effort || 'low');
+        OWN_API.enabled = true;
+        try {
+            var prev = {};
+            try { prev = GM_getValue('OWN_API_CONFIG', {}) || {}; } catch (_) { }
+            var next = Object.assign({}, prev, {
+                baseUrl: base, apiKey: key, model: model, enabled: true,
+                authStyle: style, vision: OWN_API.vision, effort: OWN_API.effort,
+                models: (Array.isArray(OWN_API.availableModels) && OWN_API.availableModels.length) ? OWN_API.availableModels : [model]
+            });
+            GM_setValue('OWN_API_CONFIG', next);
+        } catch (_) { }
+        window.__gptOwnApiTested = false;
+        try { ownApiSelfTest(); } catch (_) { }
+        return api();
+    }
+    function handle(cmd, payload) {
+        switch (cmd) {
+            case 'status': return status();
+            case 'apiGet': return api();
+            case 'apiSet': return setApi(payload);
+            case 'toggle': return toggle();
+            case 'setRate': return setRate(payload && payload.rate);
+            case 'reviewStart':
+                if (location.pathname.indexOf('/exam/preview') === -1) throw new Error('只读核对目前仅支持考试预览页');
+                zx420.reviewPage();
+                return { started: true };
+            case 'reviewRetry':
+                zx420.retryPending();
+                return { started: true };
+            case 'reviewStop':
+                zx420.stopReview();
+                return { stopped: true };
+            case 'reviewStats': return counts();
+            default: throw new Error('未知命令：' + cmd);
+        }
+    }
+    window.addEventListener('message', function (ev) {
+        var d = ev.data;
+        if (!d || d.__zxExt !== true || d.source !== 'zx-sidepanel') return;
+        try {
+            var out = handle(d.cmd, d.payload);
+            if (out && typeof out.then === 'function') {
+                out.then(function (data) { reply(d.id, true, data); }, function (e) { reply(d.id, false, { error: String(e && e.message || e) }); });
+            } else {
+                reply(d.id, true, out);
+            }
+        } catch (e) {
+            reply(d.id, false, { error: String(e && e.message || e) });
+        }
+    });
 })();

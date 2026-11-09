@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知行 · 网课助手</title>
+<link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">知</span>
+    <div>
+      <h1>知行 · 网课助手</h1>
+      <p>4.2.7 · 侧栏扩展 1.0.0</p>
+    </div>
+  </div>
+  <span id="conn" class="pill pill-muted">连接中</span>
+</header>
+
+<main>
+  <section class="card status-card">
+    <div class="status-head">
+      <div>
+        <span class="eyebrow">当前任务</span>
+        <strong id="state">待启动</strong>
+      </div>
+      <span id="pageKind" class="tag">未识别</span>
+    </div>
+    <p id="pageTitle" class="muted">打开学习通页面后开始</p>
+    <div class="progress"><span id="bar"></span></div>
+    <div class="row between">
+      <span id="progressText" class="muted">核对尚未开始</span>
+      <span id="reviewBadge" class="muted"></span>
+    </div>
+    <button id="mainBtn" class="primary" type="button" disabled>▶ 开始当前任务</button>
+    <button id="reviewBtn" class="ghost" type="button" disabled>◎ 只读核对整卷</button>
+  </section>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>答题核对</h2>
+      <button id="refreshStats" class="link" type="button">刷新</button>
+    </div>
+    <div class="metrics">
+      <div><strong id="mSame">0</strong><span>一致</span></div>
+      <div><strong id="mDiff">0</strong><span>不一致</span></div>
+      <div><strong id="mPending">0</strong><span>待复核</span></div>
+      <div><strong id="mUnanswered">0</strong><span>未作答</span></div>
+    </div>
+    <p id="statsHint" class="muted">核对后这里会显示统计。</p>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>课程</h2><span class="muted">当前页面</span></div>
+    <label class="field">播放倍速
+      <select id="rate">
+        <option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+        <option value="3">3×</option><option value="4">4×</option><option value="6">6×</option>
+        <option value="8">8×</option><option value="16">16×</option>
+      </select>
+    </label>
+    <p id="mediaLine" class="muted">等待页面媒体状态。</p>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>API 设置</h2><span id="apiState" class="pill pill-muted">未配置</span></div>
+    <label class="field">地址<input id="baseUrl" type="url" placeholder="https://api.deepseek.com/v1" spellcheck="false"></label>
+    <label class="field">Key<input id="apiKey" type="password" placeholder="已保存，留空不修改" spellcheck="false"></label>
+    <div class="two">
+      <label class="field">模型<input id="model" type="text" placeholder="deepseek-flash" spellcheck="false"></label>
+      <label class="field">鉴权
+        <select id="authStyle">
+          <option value="bearer">Bearer</option>
+          <option value="x-api-key">x-api-key</option>
+          <option value="api-key">api-key</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+    </div>
+    <label class="check"><input id="vision" type="checkbox">发送图片（读图）</label>
+    <div class="row">
+      <button id="saveApi" class="primary small" type="button">保存并测试</button>
+      <button id="showKey" class="ghost small" type="button">显示</button>
+    </div>
+    <p id="apiMsg" class="muted"></p>
+  </section>
+
+  <section class="card log-card">
+    <div class="section-head"><h2>运行日志</h2><span id="logDot" class="dot"></span></div>
+    <pre id="log">暂无日志</pre>
+  </section>
+</main>
+
+<footer>原生侧栏 · 页面内容会真正缩窄 · 需安装 4.2.7 用户脚本</footer>
+<script src="sidepanel.js"></script>
+</body>
+</html>

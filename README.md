@@ -1,53 +1,55 @@
 # 知行 · 网课助手 · 专用仓库
 
-> 私人修改版，基于原项目 v4.1.3 源码升级，不是官方发布版。
+> 私人修改版，基于原项目 v4.1.3 / 4.2.6 代码线升级，不是官方发布版。
+> 4.2.7 起提供 **Edge 原生侧栏**：扩展用 `chrome.sidePanel` 打开真正的浏览器侧栏，页面 viewport 由浏览器缩小，不是网页内 CSS 假挤。
 
-## 安装
+## 两种用法
 
-安装页：<https://guanyunmao.github.io/zhixing/>
+| 形态 | 需要安装 | 效果 |
+|---|---|---|
+| 网页内面板 | 只装 `zhixing.user.js` | 原来的网页内面板 |
+| 原生侧栏 | `zhixing.user.js` + `zhixing-sidepanel-1.0.0.zip` | Edge 原生侧边栏，页面真正缩窄；侧栏负责控制/状态/API |
 
-| 文件 | 直链 |
-|---|---|
-| 完整版 | <https://guanyunmao.github.io/zhixing/zhixing.user.js> |
-| 轻量版 | <https://guanyunmao.github.io/zhixing/zhixing-lite.user.js> |
+### 1. 安装用户脚本
 
-轻量版去掉了内联字体解密表，体积小约 210 KB；遇到超星字体加密题会跳过解密，日志里有提示。
+1. 在脚本猫 / Tampermonkey 里停用旧的 4.2.7 网页内版本以及 4.2.6 / 4.2.5，确保同一学习通页面只有一个版本。
+2. 安装 [完整版](https://guanyunmao.github.io/zhixing/zhixing.user.js) 或 [轻量版](https://guanyunmao.github.io/zhixing/zhixing-lite.user.js)。
+3. 刷新学习通页面。
 
-**两个版本都带自动更新**：安装一次之后，仓库推送新版本时脚本管理器会自己检查并升级。轻量版只会升级到轻量版，不会被替换成完整版。
+### 2. 安装 Edge 原生侧栏扩展（可选）
+
+1. 下载 [zhixing-sidepanel-1.0.0.zip](https://guanyunmao.github.io/zhixing/zhixing-sidepanel-1.0.0.zip)，解压到固定目录。
+2. 打开 `edge://extensions/`，启用左下角「开发人员模式」。
+3. 点「加载解压缩的扩展」，选择包含 `manifest.json` 的目录。
+4. 把「知行 · 网课助手 侧栏版」固定到工具栏；点图标打开原生侧栏。
+
+安装扩展后，页面里的旧面板会被隐藏，控制入口改为扩展侧栏；停用扩展并刷新页面即可回到网页内面板。
 
 ## 版本
 
 | 文件 | 版本 |
 |---|---|
-| `zhixing.user.js` | 4.2.4 |
-| `zhixing-lite.user.js` | 4.2.4-lite |
+| `zhixing.user.js` | 4.2.7 |
+| `zhixing-lite.user.js` | 4.2.7-lite |
+| `扩展-1.0.0/` | 1.0.0 |
+| `zhixing-sidepanel-1.0.0.zip` | 1.0.0 |
 
-## 变更记录
+## 4.2.7 变更
 
-### 4.2.4
+- 用户脚本加入扩展桥：状态、开始/暂停、核对开始/停止、统计、倍速、API 读写、日志。
+- 扩展用原生 `chrome.sidePanel` 打开侧栏；扩展模式下隐藏网页内面板、跳过网页内挤压。
+- 侧栏 UI 单独重做：白色面板、卡片分区、状态/统计/API/日志。
+- 保留 4.2.7 的修复：`|z|`、空 Key、`visionSupported`、缺图处理、localStorage Key 劫持、旧记录兼容、图片/MathJax、thinking/JSON 回退、记录清理、自动更新。
 
-- 公式提取增强：支持 MathJax 3（`mjx-assistive-mml`）、MathJax 2（`data-mathml`）、KaTeX（`annotation`）与 MathML，数学题的题干不再只剩空白。
-- 图片线索增强：`<img>` 的 `data-tex` / `data-latex` / `alt` 会一并保留。
-- 侧栏标题去掉版本号小字。
-- 核对记录里的「模型完整正文」如果是 JSON 会格式化显示。
-- 题干提取为空时，提示改为「未提取到文字，可能是公式或图片」。
+## 当前限制
 
-### 4.2.3
-
-- 新增 `@downloadURL` / `@updateURL`，支持自动更新。功能与 4.2.2 一致。
-
-### 4.2.2
-
-- API 多端点轮询恢复：429 / 5xx / 网络错误自动切备用地址。
-- 图片读取失败不再整题报废：单图跳过，全部失败退回纯文本。
-- `thinking` / `reasoning_effort` 只在 DeepSeek 端点下发，其他兼容服务不会再 400。
-- 核对结果解析支持 Markdown 围栏与正文夹带说明。
-- 题干里的 `<`、`>` 不再被 HTML 解析吞掉。
-- 核对记录只保留最近 800 条。
+- 原生侧栏是「用户脚本 + 扩展」组合，不是单个扩展；页面逻辑仍由用户脚本执行。
+- 逐题详情、图片预览、单题重试、JSON/CSV 导出还没搬进侧栏；这些仍在旧网页内面板里，需要时停用扩展使用旧面板。
+- 需要 Edge/Chromium 114+。
+- 真实学习通定制页、iframe、特殊公式仍需真机验证。
 
 ## 使用说明
 
 - 只做视频/文档/作业/考试辅助作答，**不自动交卷**。
 - 需要自备 DeepSeek 官方 API（或任意 OpenAI 兼容接口），题目与图片会发送至模型服务商云端，可能产生费用。
-- 从 4.2.3 起支持自动更新；4.2.2 及更早版本需要手动装一次。
-- 仅供个人学习辅助使用，请遵守所在学校与平台的规定。
+- 仅供个人学习辅助使用，请遵守所在学校与平台的规定；原脚本头仍声明 `未经授权请勿二开`，公开分发前请自行确认许可。

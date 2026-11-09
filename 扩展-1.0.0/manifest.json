@@ -1,0 +1,84 @@
+{
+  "manifest_version": 3,
+  "name": "知行 · 网课助手 侧栏版",
+  "version": "1.0.0",
+  "description": "在 Edge 原生侧栏中控制知行脚本；需要同时安装 4.2.7 用户脚本。",
+  "minimum_chrome_version": "114",
+  "permissions": ["sidePanel", "tabs", "storage"],
+  "host_permissions": [
+    "*://*.chaoxing.com/*",
+    "*://*.xuexitong.com/*",
+    "*://*.edu.cn/*",
+    "*://*.org.cn/*",
+    "*://*.ac.cn/*",
+    "*://*.xueyinonline.com/*",
+    "*://*.sslibrary.com/*",
+    "*://*.neauce.com/*",
+    "*://*.nbdlib.cn/*",
+    "*://*.hnsyu.net/*",
+    "*://*.qutjxjy.cn/*",
+    "*://*.ynny.cn/*",
+    "*://*.hnvist.cn/*",
+    "*://*.fjlecb.cn/*",
+    "*://*.gdhkmooc.com/*",
+    "*://*.cugbonline.cn/*",
+    "*://*.zjelib.cn/*",
+    "*://*.cqrspx.cn/*",
+    "*://*.zhihui-yun.com/*",
+    "*://*.cqie.cn/*",
+    "*://*.ccqmxx.com/*",
+    "*://*.jxgmxy.com/*",
+    "*://*.jnzyjsxy.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开知行侧栏",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.chaoxing.com/*",
+        "*://*.xuexitong.com/*",
+        "*://*.edu.cn/*",
+        "*://*.org.cn/*",
+        "*://*.ac.cn/*",
+        "*://*.xueyinonline.com/*",
+        "*://*.sslibrary.com/*",
+        "*://*.neauce.com/*",
+        "*://*.nbdlib.cn/*",
+        "*://*.hnsyu.net/*",
+        "*://*.qutjxjy.cn/*",
+        "*://*.ynny.cn/*",
+        "*://*.hnvist.cn/*",
+        "*://*.fjlecb.cn/*",
+        "*://*.gdhkmooc.com/*",
+        "*://*.cugbonline.cn/*",
+        "*://*.zjelib.cn/*",
+        "*://*.cqrspx.cn/*",
+        "*://*.zhihui-yun.com/*",
+        "*://*.cqie.cn/*",
+        "*://*.ccqmxx.com/*",
+        "*://*.jxgmxy.com/*",
+        "*://*.jnzyjsxy.cn/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}
