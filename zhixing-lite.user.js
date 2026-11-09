@@ -1,7 +1,9 @@
 // ==UserScript==
-// @name                知行 · 网课助手（私人 4.2.2）（轻量版）
+// @name                知行 · 网课助手（私人 4.2.3）（轻量版）
 // @namespace           zhixing.local
-// @version             4.2.2-lite
+// @downloadURL         https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
+// @updateURL           https://guanyunmao.github.io/zhixing/zhixing-lite.user.js
+// @version             4.2.3-lite
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
