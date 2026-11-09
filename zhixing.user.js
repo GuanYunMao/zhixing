@@ -1,9 +1,7 @@
 // ==UserScript==
-// @name                知行 · 网课助手
+// @name                知行 · 网课助手（私人 4.2.2）
 // @namespace           zhixing.local
-// @downloadURL      https://guanyunmao.github.io/zhixing/zhixing.user.js
-// @updateURL        https://guanyunmao.github.io/zhixing/zhixing.user.js
-// @version             4.1.3
+// @version             4.2.2
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -148,7 +146,7 @@ var setting = {
 
     examTurn: 1,
     previewTurn: 1,
-    bankOn: 1,
+    bankOn: 0,
     examTurnTime: 0,
     goodStudent: 0,
     alterTitle: 1,
@@ -392,19 +390,6 @@ function ownApiUrl(base, pathKey) {
     return base + p + q;
 }
 
-function ownApiAbsUrl(u) {
-    var s = String(u || "").trim();
-    if (!s) return "";
-    if (s.indexOf("data:") === 0) return s;
-    if (s.indexOf("//") === 0) return "https:" + s;
-    if (/^https?:\/\//i.test(s)) return s;
-    try {
-        var base = (typeof location !== "undefined" && location.href) ? location.href : "";
-        if (!base) return "";
-        return new URL(s, base).href;
-    } catch (_) { return ""; }
-}
-
 function ownApiStripMedia(t) {
     return String(t == null ? "" : t)
         .replace(/<img\b[^>]*>/gi, "[图片]")
@@ -414,72 +399,6 @@ function ownApiStripMedia(t) {
         .replace(/<[^>]*>/g, "")
         .replace(/\s+/g, " ")
         .trim();
-}
-
-function ownApiImgList(payloadStr) {
-    var max = parseInt(OWN_API.maxImages || 4, 10);
-    if (!isFinite(max) || max <= 0) max = 4;
-    var urls = [];
-    var raw = String(payloadStr || "");
-    var re = /<img\b[^>]*?(?:data-src|data-original|src)\s*=\s*\\?["']([^"']+)["']/gi;
-    var m;
-    while ((m = re.exec(raw)) !== null) {
-        var u = ownApiAbsUrl(String(m[1]).replace(/\\+$/, ""));
-        if (!u) continue;
-        if (u.indexOf("blob:") === 0) {
-            logger("这张图是 blob: 地址，模型无法访问，已跳过", "orange");
-            continue;
-        }
-        if (u.indexOf("data:") === 0 && u.length > 400000) {
-            logger("内联图片过大（" + Math.round(u.length / 1024) + "KB），为避免卡住已跳过", "orange");
-            continue;
-        }
-        if (urls.indexOf(u) === -1) urls.push(u);
-        if (urls.length >= max) break;
-    }
-    return urls;
-}
-
-function ownApiWantImages() {
-    var v = OWN_API.vision;
-    if (v === false) return false;
-    if (v === true) return true;
-    return OWN_API.visionSupported === true;
-}
-
-function ownApiBody(payloadStr, withImages) {
-    var p = ownApiParsePayload(payloadStr);
-    var plain = { type: p.type, answer_format: p.answer_format, question: ownApiStripMedia(p.question) };
-    if (Object.prototype.toString.call(p.options) === "[object Array]") {
-        plain.options = p.options.map(function (o) { return ownApiStripMedia(o); });
-    }
-    var _norms = (plain.options || []).map(function (o) {
-        return String(o == null ? "" : o).replace(/[\s()（）\[\]【】]/g, "").replace(/si$/i, "").toLowerCase();
-    });
-    var _unusable = _norms.length > 1 && _norms.every(function (x) { return x === _norms[0]; });
-    if (_unusable) {
-        delete plain.options;
-        plain.answer_format = "请直接给出正确答案的完整表达式（例如 x=0.02cos(4πt-4π/3)），不要只给单位；若选项是图片，则只回答选项字母 A/B/C/D";
-    }
-    var text = JSON.stringify(plain);
-    var imgs = withImages ? ownApiImgList(payloadStr) : [];
-    var _optArr = (plain.options || []);
-    var _nonText = false;
-    for (var _oi = 0; _oi < _optArr.length; _oi++) {
-        var _os = String(_optArr[_oi] == null ? "" : _optArr[_oi]).replace(/\[图片\]/g, "").replace(/\[音频\]/g, "");
-        if (!/[\u4e00-\u9fa5A-Za-z0-9]/.test(_os)) { _nonText = true; break; }
-    }
-    if (_unusable) text += "\n\n（本题选项是公式渲染，文字提取不到。请直接给出正确答案的表达式，不要只给单位；若选项是图片，则只回答选项字母）";
-    if (_nonText && !_unusable) text += "\n\n（部分选项是公式或图片，文字可能为空。请结合图片判断，并只回答选项字母：A、B、C、D…）";
-    if (imgs.length) text += "\n\n（本题附 " + imgs.length + " 张图片，请结合图片作答。若选项是公式，请只回答选项字母）";
-    var content = text;
-    if (imgs.length) {
-        content = [{ type: "text", text: text }];
-        for (var i = 0; i < imgs.length; i++) {
-            content.push({ type: "image_url", image_url: { url: imgs[i] } });
-        }
-    }
-    return { text: text, content: content, images: imgs.length };
 }
 
 function ownApiErrText(obj, xhr) {
@@ -493,131 +412,835 @@ function ownApiErrText(obj, xhr) {
     return msg;
 }
 
-function ownApiAnswer(payloadStr) {
-    return new Promise(function (resolve, reject) {
-        if (!OWN_API.enabled) { reject(new Error("OWN_API.enabled=false")); return; }
-        var eps = ownApiEndpoints();
-        if (!eps.length) { reject(new Error("还没配置：请在「设置 → API 设置」里填写地址 / Key / 模型")); return; }
-        if (String(OWN_API.apiKey || "").indexOf("REPLACE") !== -1) {
-            reject(new Error("还没配置：Key 仍是占位符")); return;
+/* ===== 知行 4.2.0 私人升级模块：图文采集、官方 DeepSeek、只读核对、记录 ===== */
+var zx420 = (function () {
+    'use strict';
+    const DB_NAME = 'zhixing-review-420';
+    const STORE = 'results';
+    const MAX_IMAGES = 16;
+    const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+    const MAX_TOTAL_BYTES = 18 * 1024 * 1024;
+    let busy = false;
+    let stopRequested = false;
+    let currentCount = 0;
+    let currentTotal = 0;
+    let dbPromise = null;
+
+    function decodeEntities(s) {
+        return String(s || '')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+            .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+    }
+    function normalizeText(s) {
+        return String(s || '').replace(/\u00a0/g, ' ').replace(/[\t\r ]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+    }
+    function cleanText(html) {
+        const src = String(html || '');
+        // 没有任何完整标签时按纯文本处理：数学表达式 x<3、a>b 不会被 DOM 当成标签吞掉。
+        const hasTag = /<\/?[a-zA-Z][^<>]*>/.test(src);
+        if (!hasTag) return normalizeText(decodeEntities(src));
+        // 含标签时，只转义那些构不成标签的孤立尖括号，真标签原样交给 DOM。
+        const guarded = src.replace(/<(?![\/]?[a-zA-Z][^<>]*>)/g, '&lt;');
+        const root = document.createElement('div');
+        root.innerHTML = guarded;
+        // 不让元素触发资源或脚本，也不将 DOM 插回网页。
+        root.querySelectorAll('script:not([type*="math/tex"]),style,iframe,audio,video').forEach(n => n.remove());
+        root.querySelectorAll('annotation[encoding],script[type*="math/tex"]').forEach(n => {
+            const latex = document.createTextNode(' \\( ' + (n.textContent || '').trim() + ' \\) ');
+            if (n.parentNode) n.parentNode.insertBefore(latex, n);
+        });
+        root.querySelectorAll('svg title').forEach(n => {
+            if (n.textContent) n.parentNode.insertAdjacentText('beforebegin', ' ' + n.textContent + ' ');
+        });
+        root.querySelectorAll('img').forEach(n => n.replaceWith(document.createTextNode(n.alt ? ' [图片:' + n.alt + '] ' : ' [图片] ')));
+        return normalizeText(root.textContent || '');
+    }
+
+    function fromNodeHtml(node) {
+        if (!node) return '';
+        const clone = node.cloneNode(true);
+        clone.querySelectorAll('input,button,textarea,select').forEach(n => n.remove());
+        // 移除选项标签，避免丢失正文中实际包含的 A/B/C/D 字符。
+        clone.querySelectorAll('.choiceLetter,.option-index,.option-index-label,.num').forEach(n => {
+            if (/^[A-H][.、．：:]?$/.test((n.textContent || '').trim())) n.remove();
+        });
+        return clone.innerHTML || '';
+    }
+
+    function optionHtml(node) {
+        const raw = fromNodeHtml(node);
+        return raw.replace(/^\s*(?:<[^>]+>\s*)*([A-H])\s*[.、．：:]\s*(?=<)/i, '').trim();
+    }
+
+    function pageQuestionHtml(node) {
+        const root = node && node.querySelector('.mark_name, h3.mark_name, .Py-m1-title, .question-name, .Zy_TItle');
+        return root ? (root.innerHTML || '') : '';
+    }
+
+    function isChosen(node) {
+        if (!node) return false;
+        const p = node.parentElement || node;
+        return !!(node.matches && (node.matches('.cur,.selected,[aria-checked="true"]') ))
+            || !!p.querySelector('span.check_answer,span.check_answer_dx,input:checked,[aria-checked="true"]')
+            || !!(p.classList && (p.classList.contains('cur') || p.classList.contains('selected')));
+    }
+
+    function chooseNodes(q) {
+        const patterns = [
+            '.answerBg .answer_p',
+            '.stem_answer .answer_p',
+            '.answerList.singleChoice li',
+            '.answerList.multiChoice li',
+            '.Zy_ulTop li a'
+        ];
+        for (const pat of patterns) {
+            const found = Array.from(q.querySelectorAll(pat));
+            if (found.length >= 2) return found;
         }
-        var probe = ownApiParsePayload(payloadStr);
-        var qText = ownApiStripMedia(probe.question);
-        var oText = "";
-        if (Object.prototype.toString.call(probe.options) === "[object Array]") {
-            oText = probe.options.map(ownApiStripMedia).join(" ");
+        return [];
+    }
+
+    function extractQuestionData(node, id, bg) {
+        const opts = chooseNodes(node);
+        const type = (node.getAttribute('typename') || (node.querySelector('.colorShallow,.read_type') || {}).textContent || '').trim();
+        const titleHtml = pageQuestionHtml(node) || (node.querySelector('.reader_answer_tit') || {}).innerHTML || '';
+        const options = opts.map((el, i) => ({
+            letter: String.fromCharCode(65 + i),
+            html: optionHtml(el),
+            text: cleanText(optionHtml(el)),
+            selected: isChosen(el)
+        }));
+        const question = (bg ? bg + '\n\n' : '') + titleHtml;
+        return { id: id, type: type || (opts.length ? '选择题' : '其他'), question: question,
+            text: cleanText(question), options: options,
+            selected: options.filter(o => o.selected).map(o => o.letter) };
+    }
+
+    function pageQuestions() {
+        const containers = Array.from(document.querySelectorAll('.mark_table .questionLi,.questionLi'));
+        const roots = containers.length ? containers : Array.from(document.querySelectorAll('.question-item,.Py-mian1,.TiMu'));
+        const seen = new Set();
+        const out = [];
+        roots.forEach((node, i) => {
+            if (seen.has(node)) return;
+            seen.add(node);
+            const bg = pageQuestionHtml(node);
+            const subs = Array.from(node.querySelectorAll('.reading_answer'));
+            if (subs.length) {
+                subs.forEach((s, j) => out.push(extractQuestionData(s, String(i + 1) + '.' + String(j + 1), bg)));
+            } else out.push(extractQuestionData(node, String(i + 1), ''));
+        });
+        return out.filter(q => q.text || q.options.length);
+    }
+
+    function collectImageSources(markup) {
+        const root = document.createElement('div');
+        root.innerHTML = String(markup || '');
+        const out = [];
+        root.querySelectorAll('img').forEach(el => {
+            const u = el.getAttribute('data-original') || el.getAttribute('data-src') || el.getAttribute('data-lazy-src') || el.getAttribute('src') || '';
+            if (u && !/^javascript:/i.test(u)) out.push(u);
+        });
+        return out;
+    }
+
+    function readBlob(blob) {
+        return new Promise((resolve, reject) => {
+            if (!blob || !blob.size) return reject(new Error('空图片'));
+            if (blob.size > MAX_IMAGE_BYTES) return reject(new Error('图片大于 8MB'));
+            const fr = new FileReader();
+            fr.onload = () => resolve(String(fr.result || ''));
+            fr.onerror = () => reject(new Error('图片读取失败'));
+            fr.readAsDataURL(blob);
+        });
+    }
+
+    function imageDataUrl(src) {
+        const url = String(src || '').trim();
+        if (!url) return Promise.reject(new Error('图片地址为空'));
+        if (/^data:image\/(png|jpeg|webp|gif);base64,/i.test(url)) {
+            if (url.length > MAX_IMAGE_BYTES * 1.4) return Promise.reject(new Error('内联图片太大'));
+            return Promise.resolve(url);
         }
-        var plainText = (qText + " " + oText).replace(/\[(图片|音频|视频)\]/g, "");
-        var hasText = /[\u4e00-\u9fa5A-Za-z0-9]/.test(plainText);
-        var hasImg = ownApiImgList(payloadStr).length > 0;
-        if (!hasText && !hasImg) {
-            reject(new Error("题干没有可读文字也没有图片（可能是纯音频听力题），模型无法作答，请手动作答"));
-            return;
+        const abs = new URL(url, location.href).href;
+        // blob: 对同一浏览器环境有效，先试浏览器原生 fetch。
+        if (abs.indexOf('blob:') === 0) {
+            return fetch(abs).then(r => { if (!r.ok) throw new Error('blob 图片读取失败'); return r.blob(); }).then(readBlob);
         }
-        var idx = 0;
-        var imagesDisabled = false;
-        var finished = false;
-        var startedAt = Date.now();
-        var limitMs = OWN_API.timeoutMs || 120000;
-        var hardTimer = setTimeout(function () {
-            if (finished) return;
-            finished = true;
-            clearInterval(progTimer);
-            reject(new Error("请求超过 " + Math.round(limitMs / 1000) + "s 没有任何响应（常见原因：图片过大、图片需要登录态、或网络/代理卡住）。可先关掉「发送图片」再试"));
-        }, limitMs + 5000);
-        var progTimer = setInterval(function () {
-            if (finished) return;
-            var sec = Math.round((Date.now() - startedAt) / 1000);
-            if (sec > 60) return;
-            logger("AI 仍在思考… 已等待 " + sec + "s", "gray");
-        }, Math.min(15000, Math.max(2000, Math.round(limitMs / 5))));
-        function done(fn, val) {
-            if (finished) return;
-            finished = true;
-            clearTimeout(hardTimer);
-            clearInterval(progTimer);
-            fn(val);
-        }
-        function attempt() {
-            if (finished) return;
-            if (idx >= eps.length) { done(reject, new Error("所有 API 地址都失败了")); return; }
-            var base = eps[idx];
-            var isLast = idx >= eps.length - 1;
-            var built = ownApiBody(payloadStr, !imagesDisabled && ownApiWantImages());
-            if (built.images > 0) {
-                logger("本题附 " + built.images + " 张图片（以 URL 发给模型）", "blue");
-            }
-            var body = {
-                model: OWN_API.model,
-                temperature: typeof OWN_API.temperature === "number" ? OWN_API.temperature : 0.2,
-                stream: false,
-                messages: [
-                    { role: "system", content: OWN_API.systemPrompt },
-                    { role: "user", content: built.content }
-                ]
-            };
-            var mt = parseInt(OWN_API.maxTokens || 0, 10);
-            if (isFinite(mt) && mt > 0) body.max_tokens = mt;
-            var _eff = String(OWN_API.effort || "low").toLowerCase();
-            if (_eff === "off") { body.thinking = { type: "disabled" }; }
-            else if (_eff === "low" || _eff === "high" || _eff === "max") { body.reasoning = { effort: _eff }; }
+        return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
-                method: "POST",
-                url: ownApiUrl(base, "chatPath"),
-                headers: ownApiHeaders(),
-                data: JSON.stringify(body),
-                timeout: limitMs,
-                onload: function (xhr) {
-                    if (finished) return;
-                    var obj = null;
-                    try { obj = JSON.parse(xhr.responseText); } catch (_) { }
-                    var okHttp = xhr.status >= 200 && xhr.status < 300;
-                    if (okHttp && obj && !obj.error) {
-                        var content = "";
-                        try { content = obj.choices[0].message.content || ""; } catch (_) { }
-                        if (!content) { try { content = obj.choices[0].text || ""; } catch (_) { } }
-                        var ans = ownApiCleanAnswer(content, payloadStr);
-                        if (ans && (!/[\u4e00-\u9fa5A-Za-z0-9]/.test(ans) || !String(ans).replace(/\((?:si|SI)\)\.?/g, "").replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, ""))) {
-                            done(reject, new Error("API 返回的内容没有有效文字（只有标点或空）"));
-                            return;
-                        }
-                        try {
-                            var _u = obj.usage || {};
-                            var _rt = (_u.completion_tokens_details && _u.completion_tokens_details.reasoning_tokens) || 0;
-                            if (localStorage.getItem('ZhixingSetting.debug') === 'true') logger("tokens " + (_u.prompt_tokens || 0) + " → " + (_u.completion_tokens || 0) + "（思考 " + _rt + "）", "gray");
-                        } catch (_) { }
-                        if (ans) { done(resolve, ans); return; }
-                        var hasReason = false;
-                        try { hasReason = !!obj.choices[0].message.reasoning_content; } catch (_) { }
-                        done(reject, new Error(hasReason
-                            ? "API 只返回了思考过程（reasoning），没有正文：检查 max_tokens 是否太小，或换非推理模型"
-                            : "API 返回内容为空"));
-                        return;
-                    }
-                    if (xhr.status === 400 && built.images > 0 && !imagesDisabled) {
-                        imagesDisabled = true;
-                        OWN_API.visionSupported = false;
-                        logger("模型/服务拒绝了图片（HTTP 400），已改用纯文本重试", "orange");
-                        attempt();
-                        return;
-                    }
-                    var retryable = xhr.status === 429 || xhr.status >= 500 || xhr.status === 0;
-                    var text = ownApiErrText(obj, xhr);
-                    if (retryable && !isLast) { idx++; attempt(); return; }
-                    done(reject, new Error("HTTP " + xhr.status + " " + text));
+                method: 'GET', url: abs, responseType: 'blob', timeout: 22000,
+                onload: async function (r) {
+                    try {
+                        if (r.status < 200 || r.status >= 300) throw new Error('图片 HTTP ' + r.status);
+                        let blob = r.response;
+                        if (!blob || typeof blob.size !== 'number' || typeof blob.arrayBuffer !== 'function') throw new Error('接口未返回图片 Blob');
+                        resolve(await readBlob(blob));
+                    } catch (e) { reject(e); }
                 },
-                onerror: function () {
-                    if (finished) return;
-                    if (!isLast) { idx++; attempt(); return; }
-                    done(reject, new Error("无法连接 " + base + "（检查地址 / @connect / 网络 / 代理）"));
-                },
-                ontimeout: function () {
-                    if (finished) return;
-                    done(reject, new Error("API 超时（" + Math.round(limitMs / 1000) + "s）：若本题带图，可先关掉「发送图片」再试"));
-                }
+                onerror: () => reject(new Error('图片网络请求失败')),
+                ontimeout: () => reject(new Error('图片请求超时'))
             });
+        });
+    }
+
+    async function prepareMessages(q, useImages) {
+        const options = Array.isArray(q.options) ? q.options : [];
+        const parts = [];
+        let count = 0;
+        let totalBytes = 0;
+        let hadImageRefs = 0;
+        const skipped = [];
+        async function addBlock(title, html) {
+            const text = cleanText(html);
+            parts.push({ type: 'text', text: title + ': ' + (text || '（非文字内容）') });
+            const sources = collectImageSources(html);
+            if (!sources.length) return;
+            hadImageRefs += sources.length;
+            // 未启用读图时只跳过图片，文字照常发送，不能整题失败。
+            if (!useImages) { skipped.push(title + ' 有 ' + sources.length + ' 张图未发送'); return; }
+            for (const url of sources) {
+                if (count + 1 > MAX_IMAGES) { skipped.push('图片超过每题 ' + MAX_IMAGES + ' 张上限'); break; }
+                try {
+                    const data = await imageDataUrl(url);
+                    if (totalBytes + data.length > MAX_TOTAL_BYTES) { skipped.push('图片总大小超过上限'); break; }
+                    totalBytes += data.length;
+                    count++;
+                    parts.push({ type: 'image_url', image_url: { url: data } });
+                } catch (e) {
+                    // 单张图读不到就跳过，剩下的文字和图片继续发，不让整题死掉。
+                    skipped.push('图片读取失败：' + (e && e.message ? e.message : e));
+                }
+            }
         }
-        attempt();
+        await addBlock('题目', q.question || '');
+        for (let i = 0; i < options.length; i++) {
+            const o = options[i];
+            await addBlock('选项 ' + (o.letter || String.fromCharCode(65 + i)), typeof o === 'string' ? o : (o.html != null ? o.html : o.text));
+        }
+        // 旧版缺少题干且选项是文本时应明确失败，避免空输入。
+        if (parts.every(p => p.type !== 'image_url' && !/[\p{L}\p{N}]/u.test(p.text.replace(/^(题目|选项 [A-H]):\s*/, '')))) {
+            throw new Error('题目内容不完整，无法安全判断');
+        }
+        return { parts: parts, imageCount: count, hadImageRefs: hadImageRefs, skipped: skipped };
+    }
+
+    function apiError(message, retryable) {
+        const e = new Error(message);
+        e.retryable = !!retryable;
+        return e;
+    }
+    function apiRequest(url, body, timeout) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST', url: url, headers: ownApiHeaders(),
+                data: JSON.stringify(body), timeout: timeout || 120000,
+                onload: function (r) {
+                    let obj = null;
+                    try { obj = JSON.parse(r.responseText || '{}'); } catch (_) {}
+                    if (!(r.status >= 200 && r.status < 300) || !obj || obj.error) {
+                        reject(apiError('HTTP ' + r.status + ': ' + (obj && obj.error && obj.error.message || String(r.responseText || '').slice(0, 250)),
+                            r.status === 429 || r.status >= 500 || r.status === 0));
+                        return;
+                    }
+                    const choice = obj.choices && obj.choices[0] || {};
+                    const msg = choice.message || {};
+                    resolve({ raw: typeof msg.content === 'string' ? msg.content : '',
+                        finishReason: choice.finish_reason || '',
+                        usage: obj.usage || {},
+                        hadReasoning: !!msg.reasoning_content });
+                },
+                onerror: () => reject(apiError('网络连接失败', true)),
+                ontimeout: () => reject(apiError('响应超时', true))
+            });
+        });
+    }
+
+    async function apiRequestAny(body, timeout) {
+        const eps = ownApiEndpoints();
+        if (!eps.length) throw new Error('未配置 API 地址');
+        let lastErr = null;
+        for (let i = 0; i < eps.length; i++) {
+            try {
+                return await apiRequest(ownApiUrl(eps[i], 'chatPath'), body, timeout);
+            } catch (e) {
+                lastErr = e;
+                if (!e || !e.retryable || i === eps.length - 1) throw e;
+            }
+        }
+        throw lastErr || new Error('所有 API 地址都失败了');
+    }
+
+    function optionLetters(raw, count, multiple) {
+        let s = String(raw || '').trim().toUpperCase();
+        const groups = s.match(/^[A-H](?:[\s,|、，;；]+[A-H])*$/);
+        if (!groups) return [];
+        const arr = s.match(/[A-H]/g) || [];
+        const letters = Array.from(new Set(arr)).filter(c => c.charCodeAt(0) - 65 < count);
+        return multiple ? letters : letters.slice(0, 1);
+    }
+
+    function extractJson(raw) {
+        let s = String(raw || '').trim();
+        // 模型有时会包一层 Markdown 围栏，或者正文前后带说明文字，先剥掉再解析。
+        s = s.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+        const a = s.indexOf('{'), b = s.lastIndexOf('}');
+        if (a >= 0 && b > a) s = s.slice(a, b + 1);
+        return s;
+    }
+    function parseReview(reply, q) {
+        if (!reply || !reply.raw || !reply.raw.trim()) return { status:'pending', answer:[], explanation:'模型正文为空', raw:reply && reply.raw || '' };
+        if (reply.finishReason === 'length') return { status:'pending', answer:[], explanation:'模型输出被截断', raw:reply.raw };
+        let obj;
+        try { obj = JSON.parse(extractJson(reply.raw)); }
+        catch (_) { return { status:'pending', answer:[], explanation:'模型返回内容不是合法 JSON', raw:reply.raw }; }
+        let answer = obj.selected || obj.answer_letters || obj.letters || [];
+        if (typeof answer === 'string') answer = answer.trim().toUpperCase().match(/[A-H]/g) || [];
+        if (!Array.isArray(answer)) answer = [];
+        answer = Array.from(new Set(answer.map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-H]$/.test(x))));
+        if (answer.some(x => (x.charCodeAt(0) - 65) >= q.options.length)) return {status:'pending',answer:[],explanation:'模型选项超出范围',raw:reply.raw};
+        if (obj.uncertain === true) return { status:'pending', answer:answer, explanation:'模型明确表示不确定：'+String(obj.explanation||''), raw:reply.raw };
+        if (q.options.length && !answer.length) return { status:'pending', answer:[],explanation:'模型未给出可识别的选项字母',raw:reply.raw };
+        const a = (q.selected || []).slice().sort().join('');
+        const b = answer.slice().sort().join('');
+        return { status: a === b ? 'same' : (a ? 'different' : 'unanswered'),
+            answer:answer, explanation:String(obj.explanation || obj.reason || '').slice(0, 3000),raw:reply.raw };
+    }
+
+    function isDeepSeekEndpoints() {
+        try {
+            const eps = ownApiEndpoints();
+            if (!eps.length) return false;
+            return eps.some(function (base) {
+                try { return /(^|\.)deepseek\.com$/i.test(new URL(base).hostname); }
+                catch (_) { return /deepseek/i.test(String(base)); }
+            });
+        } catch (_) { return /deepseek/i.test(String(OWN_API.model || '')); }
+    }
+    async function callAI(input, review) {
+        const q = typeof input === 'string' ? JSON.parse(input) : input;
+        if (!OWN_API || !OWN_API.enabled || !OWN_API.apiKey || !OWN_API.baseUrl || String(OWN_API.apiKey).includes('REPLACE')) throw new Error('未配置 API');
+        const model = String(OWN_API.model || 'deepseek-flash');
+        // 读图条件：显式开启，或模型本身就是支持视觉的 deepseek-flash。
+        const wantImages = OWN_API.vision !== false && (OWN_API.vision === true || model === 'deepseek-flash');
+        let prepared = await prepareMessages(q, wantImages);
+        // 图片全部取不到时退回纯文本再拼一次，保证带图题至少能靠文字作答。
+        if (wantImages && prepared.hadImageRefs > 0 && prepared.imageCount === 0) {
+            try { log('图片全部读取失败，本题改用纯文本复核', 'orange'); } catch (_) {}
+            prepared = await prepareMessages(q, false);
+        }
+        const eff = ['low','high','max'].includes(String(OWN_API.effort)) ? String(OWN_API.effort) : 'low';
+        const system = review
+            ? '你是数学题目独立核对助手。请根据题目和 A/B/C/D 选项作答，只输出严格的 json 对象，不要解释额外文本。格式示例：{"selected":["B"],"explanation":"简短的可核对依据","uncertain":false}。多选题 selected 可有多个字母；题目信息不足时返回 selected:[] 且 uncertain:true。'
+            : String(OWN_API.systemPrompt || '仅回答正确选项字母或选项内容');
+        const body = { model:model, stream:false,
+            messages:[{ role:'system', content:system },{ role:'user', content:prepared.parts }] };
+        // thinking / reasoning_effort 是 DeepSeek 的扩展参数，发给别家会 400，只在 DeepSeek 端点下发。
+        const thinkingAgent = isDeepSeekEndpoints();
+        if (thinkingAgent) { body.thinking = { type: 'enabled' }; body.reasoning_effort = eff; }
+        if (review) body.response_format = { type:'json_object' };
+        if (OWN_API.maxTokens > 0) body.max_tokens = Number(OWN_API.maxTokens);
+        const timeout = OWN_API.timeoutMs || 120000;
+        let reply;
+        try {
+            reply = await apiRequestAny(body, timeout);
+        } catch (e) {
+            // 某些兼容服务对 thinking 字段直接 400，去掉扩展参数再试一次。
+            if (body.thinking && /HTTP 400/.test(String(e && e.message || ''))) {
+                try { log('服务拒绝 thinking 参数，已改用普通请求重试', 'orange'); } catch (_) {}
+                delete body.thinking; delete body.reasoning_effort;
+                reply = await apiRequestAny(body, timeout);
+            } else throw e;
+        }
+        if (prepared.skipped && prepared.skipped.length) {
+            try { log(prepared.skipped.join('；'), 'gray'); } catch (_) {}
+        }
+        if (reply.finishReason === 'length') {
+            const error = new Error('AI 输出达到长度上限，答案不完整');
+            error.raw = reply.raw;
+            throw error;
+        }
+        if (review) return { reply:reply, result:parseReview(reply, q), sentImages:prepared.imageCount };
+        const ans = ownApiCleanAnswer(reply.raw, typeof input === 'string' ? input : JSON.stringify(input));
+        if (!ans) throw new Error(reply.hadReasoning ? '只有推理内容，缺少最终答案' : 'AI 返回空白答案');
+        return { answer:ans, raw:reply.raw, sentImages:prepared.imageCount };
+    }
+
+    function dbOpen() {
+        if (dbPromise) return dbPromise;
+        dbPromise = new Promise((resolve,reject) => {
+            if (!window.indexedDB) { reject(new Error('浏览器不支持 IndexedDB')); return; }
+            const req = indexedDB.open(DB_NAME,1);
+            req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE,{keyPath:'uid'}); };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error || new Error('数据库打开失败'));
+        });
+        return dbPromise;
+    }
+
+    async function dbAction(type, value) {
+        const db = await dbOpen();
+        return new Promise((resolve,reject) => {
+            const tx = db.transaction(STORE, type==='getAll'?'readonly':'readwrite');
+            const st = tx.objectStore(STORE);
+            let req;
+            if (type==='put') req = st.put(value);
+            else if (type==='clear') req = st.clear();
+            else if (type==='delete') req = st.delete(value);
+            else req = st.getAll();
+            req.onsuccess = ()=>resolve(req.result);
+            req.onerror = ()=>reject(req.error);
+        });
+    }
+
+    // 只保留最近 MAX_RECORDS 条，防止记录库无限增长。
+    const MAX_RECORDS = 800;
+    async function pruneRecords() {
+        try {
+            const arr = await dbAction('getAll');
+            if (!Array.isArray(arr) || arr.length <= MAX_RECORDS) return 0;
+            arr.sort((a,b)=>(a.time||0)-(b.time||0));
+            const drop = arr.slice(0, arr.length - MAX_RECORDS);
+            for (const r of drop) { try { await dbAction('delete', r.uid); } catch (_) {} }
+            return drop.length;
+        } catch (_) { return 0; }
+    }
+
+    function slimQuestion(q) {
+        return {id:q.id,type:q.type,text:q.text,
+            options:q.options.map(o=>({letter:o.letter,text:o.text,hasImage:collectImageSources(o.html).length>0})),
+            selected:q.selected};
+    }
+
+    function log(msg, color) {
+        try { logger('[4.2 核对] ' + String(msg).replace(/[<>&]/g, ' '), color || 'blue'); } catch (_) { console.log(msg); }
+    }
+    function delay(ms) { return new Promise(resolve=>setTimeout(resolve,ms)); }
+    async function scrollLoad() {
+        const initial = window.scrollY;
+        let stable = 0, last = -1;
+        for (let i = 0; i < 18 && stable < 3; i++) {
+            if (stopRequested) break;
+            const h = Math.max(document.documentElement.scrollHeight, document.body && document.body.scrollHeight || 0);
+            window.scrollTo(0, Math.min(h, window.scrollY + Math.max(480,innerHeight*0.85)));
+            await delay(220);
+            if (h === last) stable++; else stable = 0;
+            last = h;
+            if (window.scrollY + window.innerHeight >= h-30) stable++;
+        }
+        window.scrollTo(0, initial);
+    }
+
+    async function reviewPage() {
+        if (busy) { log('已有核对任务运行中', 'orange'); return; }
+        if (!location.pathname.includes('/exam/preview')) { log('只读核对目前仅支持学习通考试预览页', 'orange'); return; }
+        busy=true; stopRequested=false; currentCount=0; currentTotal=0;
+        try {
+            log('正在滚动扫描试卷（不会点击答案或交卷）');
+            await scrollLoad();
+            const questions=pageQuestions();
+            currentTotal=questions.length;
+            log('扫描到 '+questions.length+' 道题，准备逐题核对。', 'blue');
+            if (!questions.length) throw new Error('找不到题目，请先让网页完整加载');
+            const batch=Date.now().toString(36);
+            for (const q of questions) {
+                if(stopRequested) { log('用户停止核对', 'orange'); break; }
+                let record={ uid:batch+'-'+q.id,session:batch,url:location.origin+location.pathname,
+                    time:Date.now(),question:slimQuestion(q),status:'pending',answer:[],explanation:'',raw:''};
+                try {
+                    const data=await callAI(q,true);
+                    Object.assign(record,{status:data.result.status,answer:data.result.answer,
+                        explanation:data.result.explanation,raw:data.result.raw,images:data.sentImages});
+                } catch(e) { record.status='pending'; record.explanation='请求异常：'+(e.message||e); record.raw=String(e.raw||''); }
+                try { await dbAction('put',record); } catch(e) { log('保存核对记录失败：'+e.message,'red'); }
+                currentCount++;
+                try { if(typeof zx421!=='undefined')zx421.refresh(); } catch (_) {}
+                log('第 '+q.id+' 题：'+({same:'一致',different:'不一致',unanswered:'未作答',pending:'待复核'}[record.status]||record.status),record.status==='same'?'green':record.status==='different'?'orange':'gray');
+                // 避免连续过快触发 API 流控
+                await delay(300);
+            }
+            const pruned = await pruneRecords();
+            if (pruned) log('已清理 ' + pruned + ' 条旧核对记录（只保留最近 ' + MAX_RECORDS + ' 条）', 'gray');
+            log('核对结束，已处理 '+currentCount+' 道；打开「核对记录」查看。','green');
+            if(typeof zx421==='undefined'||zx421.getMode()==='sidebar') await showRecords();
+            else log('核对结果已保存，展开悬浮球后在「记录」中查看。','green');
+        } catch(e){ log('核对中止：'+(e.message||e),'red'); }
+        finally {busy=false;stopRequested=false;try{if(typeof zx421!=='undefined')zx421.refresh();}catch(_){}}
+    }
+
+    function downloadText(name,content,mime) {
+        const blob=new Blob([content],{type:mime||'text/plain;charset=utf-8'});
+        const href=URL.createObjectURL(blob);
+        const a=document.createElement('a');a.href=href;a.download=name;document.body.appendChild(a);a.click();a.remove();
+        setTimeout(()=>URL.revokeObjectURL(href),4000);
+    }
+
+    async function showRecords() {
+        let arr;
+        try { arr=await dbAction('getAll'); }
+        catch(e){log('读取核对记录失败：'+e.message,'red');return;}
+        arr=arr.filter(x=>x.url===location.origin+location.pathname).sort((a,b)=>b.time-a.time);
+        try { if (typeof zx421!=='undefined') zx421.summary(arr); } catch (_) {}
+        const doc=getPanelDocument();
+        const host=doc.getElementById('zx421RecordsPane');
+        if(!host){ log('核对记录容器未初始化，请重新打开侧栏','orange');return; }
+        host.textContent='';
+        const head=doc.createElement('div');head.className='zx421-records-header';
+        head.innerHTML='<b>核对记录</b><button id="zx420json" type="button">JSON</button><button id="zx420csv" type="button">CSV</button>';
+        const filters=doc.createElement('div');filters.className='zx421-record-filter';
+        filters.innerHTML='<input id="zx420find" placeholder="题号或题干关键词" aria-label="搜索核对记录"><select id="zx420filter" aria-label="按结果筛选"><option value="all">全部状态</option><option value="same">一致</option><option value="different">不一致</option><option value="pending">待复核</option><option value="unanswered">未作答</option></select>';
+        const list=doc.createElement('div');list.id='zx420list';
+        host.append(head,filters,list);
+        head.querySelector('#zx420json').onclick=()=>downloadText('zhixing-review.json',JSON.stringify(arr,null,2),'application/json;charset=utf-8');
+        head.querySelector('#zx420csv').onclick=()=>{
+            const rows=[['题号','状态','已选','AI答案','题干','原因']].concat(arr.map(r=>[r.question.id,r.status,(r.question.selected||[]).join('|'),(r.answer||[]).join('|'),r.question.text,r.explanation]));
+            downloadText('zhixing-review.csv','\ufeff'+rows.map(row=>row.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\r\n'),'text/csv;charset=utf-8');
+        };
+        const find=filters.querySelector('#zx420find');const filter=filters.querySelector('#zx420filter');
+        find.oninput=render;filter.onchange=render;
+        function render(){
+            const key=find.value.trim().toLowerCase(),state=filter.value;
+            list.textContent='';
+            arr.filter(r=>(state==='all'||r.status===state)&&(!key||String(r.question.id+' '+r.question.text).toLowerCase().includes(key))).forEach(r=>{
+                const box=doc.createElement('details');
+                const sum=doc.createElement('summary');
+                const label={same:'一致',different:'不一致',pending:'待复核',unanswered:'未作答'}[r.status]||r.status;
+                sum.textContent='第 '+r.question.id+' 题 · '+label+' · 已选 '+(r.question.selected||[]).join(',')+' · AI '+(r.answer||[]).join(',');
+                const desc=doc.createElement('pre');
+                desc.textContent='题干：'+r.question.text+'\n\n依据/异常：'+r.explanation+'\n\n模型完整正文：\n'+r.raw;
+                box.append(sum,desc);list.appendChild(box);
+            });
+            if(!list.children.length){const p=doc.createElement('p');p.className='zx421-muted';p.textContent='暂无符合条件的记录';list.appendChild(p);}
+        }
+        render();
+        try { if(typeof zx421!=='undefined')zx421.openTab('records'); } catch (_) {}
+    }
+
+    function attachPanel() {
+        const box=document.querySelector('#ne-21box');
+        if(!box||box.querySelector('#zx420reviewbtn'))return;
+        const panel=box.querySelector('#zx421ReviewControls')||box.querySelector('.ne21-body')||box.querySelector('#ne-21notice');
+        if(!panel)return;
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;padding:7px 0;flex-wrap:wrap';
+        const b1=document.createElement('button');b1.id='zx420reviewbtn';b1.textContent='🔎 只读核对整卷';b1.className='ne21-btn ne21-btn-secondary';b1.type='button';b1.onclick=()=>reviewPage();
+        const b2=document.createElement('button');b2.textContent='📋 核对记录';b2.className='ne21-btn ne21-btn-secondary';b2.type='button';b2.onclick=()=>showRecords();
+        const b3=document.createElement('button');b3.textContent='停止核对';b3.className='ne21-btn ne21-btn-secondary';b3.type='button';b3.onclick=()=>{stopRequested=true;};
+        row.append(b1,b2,b3);panel.prepend(row);
+    }
+
+    return {callAI,reviewPage,showRecords,attachPanel,stopReview:()=>{stopRequested=true;},getReviewState:()=>({busy:busy,count:currentCount,total:currentTotal}),getReviewRecords:()=>dbAction('getAll').then(arr=>arr.filter(x=>x.url===location.origin+location.pathname)),optionHtml,extractQuestionData,pageQuestions,
+        prepareMessages,parseReview,optionLetters,collectImageSources};
+})();
+/* ===== 知行 4.2.0 新模块结束 ===== */
+
+/* ===== 知行 4.2.1 · 网页内侧栏与可拖拽吸边悬浮球 =====
+ * 这是网页内面板，不是浏览器原生侧边栏。保留所有原有答题和 API 控件的 id。
+ */
+var zx421 = (function () {
+    'use strict';
+    var PREFIX = 'ZhixingSetting.ui421.';
+    var SIDES = ['left', 'right'];
+    var TABS = ['control', 'review', 'records', 'settings'];
+    var styleId = 'zx421-sidebar-style';
+    var activeDocument = null;
+    var ballPointer = null;
+    var polling = null;
+
+    function get(key, fallback) {
+        try { var val = localStorage.getItem(PREFIX + key); return val === null ? fallback : val; }
+        catch (_) { return fallback; }
+    }
+    function set(key, value) { try { localStorage.setItem(PREFIX + key, String(value)); } catch (_) {} }
+    function safeNum(value, fallback) { var v = Number(value); return isFinite(v) ? v : fallback; }
+    function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+    function doc() { return activeDocument || (typeof getPanelDocument === 'function' ? getPanelDocument() : document); }
+    function byId(id) { return doc().getElementById(id); }
+    function viewport() { var win = doc().defaultView || window; return {w:win.innerWidth || 1024,h:win.innerHeight || 768}; }
+    function readBall() {
+        var raw = get('ball', '');
+        try {
+            var pos = JSON.parse(raw);
+            if (pos && SIDES.indexOf(pos.edge) >= 0 && isFinite(Number(pos.y)))
+                return {edge:pos.edge, y:clamp(Number(pos.y),0,1)};
+        } catch (_) { }
+        return {edge:'right',y:0.72};
+    }
+    function saveBall(edge,y) { set('ball',JSON.stringify({edge:edge,y:clamp(y,0,1)})); }
+    function css(docArg) {
+        var d = docArg || doc();
+        if (d.getElementById(styleId)) return;
+        var e = d.createElement('style');e.id=styleId;
+        e.textContent = `
+#ne-21box.zx421-sidebar, #ne-21box.zx421-sidebar.ne21-mobile {
+  box-sizing:border-box!important;position:fixed!important;top:0!important;bottom:0!important;
+  right:0;left:auto;width:var(--zx421-width,380px)!important;
+  height:100vh!important;height:100dvh!important;max-height:none!important;
+  border-radius:18px 0 0 18px!important;margin:0!important;
+  z-index:2147483000!important;display:flex;flex-direction:column;
+  background:linear-gradient(155deg,rgba(251,253,255,.98),rgba(237,243,251,.97))!important;
+  border:1px solid rgba(148,163,184,.26)!important;
+  box-shadow:-14px 0 40px rgba(15,23,42,.15)!important;
+  backdrop-filter:blur(22px)!important;-webkit-backdrop-filter:blur(22px)!important;
+  animation:none!important;transition:box-shadow .2s ease!important;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+}
+#ne-21box.zx421-sidebar.zx421-left {left:0!important;right:auto!important;border-radius:0 18px 18px 0!important;box-shadow:14px 0 40px rgba(15,23,42,.15)!important;}
+#ne-21box.zx421-sidebar .ne21-header {touch-action:auto!important;cursor:default!important;padding:13px 15px!important;gap:8px;flex-shrink:0;}
+#ne-21box.zx421-sidebar #ne21DragHandle {display:none!important;}
+#ne-21box.zx421-sidebar .ne21-header .ne21-kbd {display:none;}
+#ne-21box.zx421-sidebar .ne21-header #ne21FailChip {display:inline-flex;}
+#ne-21box.zx421-sidebar .ne21-title {font-size:14px;}
+#ne-21box.zx421-sidebar .ne21-actions {display:flex;gap:7px;align-items:center;}
+#ne-21box.zx421-sidebar #ne-21pause, #ne-21box.zx421-sidebar #ne-21close {width:30px;height:30px;flex-shrink:0;}
+#ne-21box.zx421-sidebar .zx421-resize {position:absolute;top:0;bottom:0;left:0;width:7px;z-index:5;cursor:ew-resize;touch-action:none;background:transparent;}
+#ne-21box.zx421-sidebar.zx421-left .zx421-resize {left:auto;right:0;}
+#ne-21box.zx421-sidebar .zx421-resize:hover {background:rgba(37,99,235,.15);}
+#ne-21box.zx421-sidebar .zx421-status {padding:10px 14px 9px;border-bottom:1px solid rgba(148,163,184,.18);background:rgba(255,255,255,.46);flex-shrink:0;}
+#ne-21box.zx421-sidebar .zx421-statusline {display:flex;justify-content:space-between;gap:10px;align-items:center;color:#475569;font-size:11px;}
+#ne-21box.zx421-sidebar .zx421-statusline strong {font-size:11px;font-weight:600;color:#2563eb;}
+#ne-21box.zx421-sidebar .zx421-progress {height:5px;margin-top:9px;background:#e0e9f5;border-radius:100px;overflow:hidden;}
+#ne-21box.zx421-sidebar .zx421-progress > span {height:100%;width:0;display:block;border-radius:100px;background:#4386ed;transition:width .2s ease;}
+#ne-21box.zx421-sidebar .ne21-body {display:flex!important;flex:1 1 auto;min-height:0;overflow:hidden!important;padding:0!important;}
+#ne-21box.zx421-sidebar .zx421-page {display:none;overflow-y:auto;overscroll-behavior:contain;min-height:0;flex:1 1 auto;padding:15px 14px 24px;box-sizing:border-box;}
+#ne-21box.zx421-sidebar .zx421-page.zx421-active {display:block;}
+#ne-21box.zx421-sidebar .zx421-page::-webkit-scrollbar {width:6px;}
+#ne-21box.zx421-sidebar .zx421-page::-webkit-scrollbar-thumb {background:#cbd5e1;border-radius:6px;}
+#ne-21box.zx421-sidebar .zx421-section-title {margin:0 0 10px;font-size:13px;font-weight:650;color:#334155;}
+#ne-21box.zx421-sidebar .zx421-card {background:rgba(255,255,255,.62);border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:12px;margin-bottom:12px;}
+#ne-21box.zx421-sidebar .zx421-card p {margin:4px 0;color:#475569;}
+#ne-21box.zx421-sidebar .zx421-muted {font-size:11px;color:#64748b;line-height:1.5;}
+#ne-21box.zx421-sidebar .zx421-main-btn {font-size:13px;min-height:38px;width:100%;border:1px solid rgba(59,130,246,.25);border-radius:12px;color:#fff;background:linear-gradient(100deg,#3b82f6,#2563eb);font-weight:600;cursor:pointer;margin:10px 0 0;}
+#ne-21box.zx421-sidebar .zx421-main-btn:hover {filter:brightness(1.06);}
+#ne-21box.zx421-sidebar .zx421-metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:12px;}
+#ne-21box.zx421-sidebar .zx421-metric {text-align:center;border:1px solid rgba(148,163,184,.18);border-radius:12px;background:rgba(255,255,255,.67);padding:12px 4px;}
+#ne-21box.zx421-sidebar .zx421-metric strong {font-size:19px;color:#0f172a;display:block;}
+#ne-21box.zx421-sidebar .zx421-metric span {font-size:11px;color:#64748b;}
+#ne-21box.zx421-sidebar .zx421-note {font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-word;color:#334155;}
+#ne-21box.zx421-sidebar .zx421-controls {display:flex;gap:8px;flex-wrap:wrap;}
+#ne-21box.zx421-sidebar .zx421-controls .ne21-btn {flex:1 1 auto;min-height:34px;white-space:normal;}
+#ne-21box.zx421-sidebar #moreSettings {display:block!important;margin:0!important;padding:8px 12px!important;}
+#ne-21box.zx421-sidebar #userInfo {margin:0 0 12px;}
+#ne-21box.zx421-sidebar #ne-21notice .ne21-row {flex-wrap:wrap;}
+#ne-21box.zx421-sidebar #ne-21notice #moreSettingsBtn {display:none;}
+#ne-21box.zx421-sidebar #ne-21log {max-height:270px;margin:0;}
+#ne-21box.zx421-sidebar .zx421-logdetails {font-size:12px;color:#334155;}
+#ne-21box.zx421-sidebar .zx421-logdetails summary {cursor:pointer;user-select:none;margin-bottom:8px;}
+#ne-21box.zx421-sidebar .zx421-footer {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));flex-shrink:0;border-top:1px solid rgba(148,163,184,.22);background:rgba(255,255,255,.78);padding:7px 8px max(7px,env(safe-area-inset-bottom));gap:4px;}
+#ne-21box.zx421-sidebar .zx421-tab {border:0;border-radius:10px;background:transparent;min-height:51px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px;cursor:pointer;color:#64748b;font-size:11px;padding:5px 3px;}
+#ne-21box.zx421-sidebar .zx421-tab .zx421-tab-icon {font-size:17px;line-height:1.25;}
+#ne-21box.zx421-sidebar .zx421-tab[aria-selected='true'] {background:rgba(37,99,235,.09);color:#1d4ed8;font-weight:650;}
+#ne-21box.zx421-sidebar .zx421-tab:hover {background:rgba(37,99,235,.08);}
+#ne-21box.zx421-sidebar #zx421RecordsPane {min-height:140px;}
+#ne-21box.zx421-sidebar .zx421-records-header {display:flex;flex-wrap:wrap;gap:7px;margin-bottom:9px;align-items:center;}
+#ne-21box.zx421-sidebar .zx421-records-header b {font-size:13px;flex:1;}
+#ne-21box.zx421-sidebar .zx421-records-header button {padding:6px 10px;border:1px solid #dbe3f0;border-radius:8px;background:#fff;cursor:pointer;}
+#ne-21box.zx421-sidebar .zx421-record-filter {display:flex;gap:6px;margin-bottom:12px;}
+#ne-21box.zx421-sidebar .zx421-record-filter input, #ne-21box.zx421-sidebar .zx421-record-filter select {min-width:0;flex:1;max-width:100%;box-sizing:border-box;padding:8px;border:1px solid #dbe3f0;border-radius:8px;background:#fff;}
+#ne-21box.zx421-sidebar .zx421-record-filter select {flex:0 0 112px;}
+#ne-21box.zx421-sidebar #zx420list {max-height:none;overflow:visible;}
+#ne-21box.zx421-sidebar #zx420list details {margin:8px 0;border:1px solid #dbe2ec;border-radius:10px;background:#fff;padding:9px;}
+#ne-21box.zx421-sidebar #zx420list pre {white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:360px;overflow:auto;}
+#ne-21box.zx421-sidebar .zx421-layout-control {display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 0;font-size:12px;}
+#ne-21box.zx421-sidebar .zx421-layout-control select {padding:5px 9px;background:white;border:1px solid #dbe3f0;border-radius:8px;}
+#ne-21box.zx421-sidebar .zx421-layout-control input[type=range] {width:160px;max-width:55%;}
+#ne-21box.zx421-sidebar .zx421-sidebar-kbd {font-size:11px;color:#64748b;margin-top:8px;}
+#ne21Ball {position:fixed!important;width:48px!important;height:48px!important;border-radius:999px!important;z-index:2147483001!important;display:none!important;align-items:center!important;justify-content:center!important;touch-action:none!important;user-select:none!important;-webkit-user-select:none!important;background:linear-gradient(145deg,#67a2ff,#2563eb)!important;color:#fff!important;font:700 17px/1 sans-serif!important;border:2px solid rgba(255,255,255,.8)!important;box-shadow:0 8px 24px rgba(29,78,216,.35)!important;cursor:grab!important;transition:left .16s ease,top .16s ease,box-shadow .2s ease!important;}
+#ne21Ball.zx421-visible {display:flex!important;}
+#ne21Ball.zx421-dragging {transition:none!important;cursor:grabbing!important;}
+#ne21Ball .zx421-ball-badge {position:absolute;right:-4px;top:-4px;padding:2px 4px;border-radius:999px;background:#ef4444;color:white;font:700 10px/1.2 sans-serif;min-width:13px;text-align:center;display:none;}
+#ne21Ball.zx421-working::after {content:'';position:absolute;inset:-5px;border:2px solid rgba(59,130,246,.55);border-radius:50%;}
+@media (max-width:640px) {
+  #ne-21box.zx421-sidebar, #ne-21box.zx421-sidebar.ne21-mobile {width:min(100vw,var(--zx421-width,380px))!important;max-width:100vw!important;border-radius:14px 0 0 14px!important;}
+  #ne-21box.zx421-sidebar.zx421-left {border-radius:0 14px 14px 0!important;}
+  #ne-21box.zx421-sidebar .zx421-resize {display:none;}
+}
+@media (prefers-reduced-motion:reduce) {#ne21Ball {transition:none!important;}}
+        `;
+        (d.head || d.documentElement).appendChild(e);
+    }
+
+    function setWidth(width) {
+        var v=clamp(safeNum(width,380),320,480);
+        var box=byId('ne-21box');
+        if(box)box.style.setProperty('--zx421-width',v+'px');
+        var size=byId('zx421Width');if(size)size.value=String(v);
+        var lab=byId('zx421WidthLabel');if(lab)lab.textContent=v+' px';
+        set('width',v);
+    }
+    function setSide(side) {
+        side=SIDES.indexOf(side)>=0?side:'right';
+        var box=byId('ne-21box');if(box)box.classList.toggle('zx421-left',side==='left');
+        var sel=byId('zx421Side');if(sel)sel.value=side;
+        set('side',side);
+        positionBall();
+    }
+    function positionBall() {
+        var b=byId('ne21Ball');if(!b)return;
+        var v=viewport(), p=readBall();
+        var x=p.edge==='left'?12:Math.max(12,v.w-60);
+        var y=clamp(Math.round((v.h-48)*p.y),8,Math.max(8,v.h-56));
+        b.style.left=x+'px';b.style.top=y+'px';b.style.right='auto';b.style.bottom='auto';
+    }
+    function ensureBall() {
+        var d=doc();
+        css(d); // 看门狗早于主面板执行时，悬浮球也不会闪现成原生按钮。
+        var b=d.getElementById('ne21Ball');
+        if(b) { if (!b.dataset.zx421Ready) wireBall(b);return b; }
+        b=d.createElement('button');b.type='button';b.id='ne21Ball';b.textContent='知';
+        b.title='单击展开知行侧栏，按住拖动可吸边';b.setAttribute('aria-label','打开知行侧栏');
+        var badge=d.createElement('span');badge.className='zx421-ball-badge';badge.id='zx421BallBadge';b.appendChild(badge);
+        (d.body || d.documentElement).appendChild(b);
+        wireBall(b);positionBall();return b;
+    }
+    function wireBall(b) {
+        if(b.dataset.zx421Ready)return;
+        b.dataset.zx421Ready='true';
+        b.addEventListener('pointerdown',function(ev){
+            if(ev.button!==0 && ev.pointerType!=='touch')return;
+            var r=b.getBoundingClientRect();
+            ballPointer={id:ev.pointerId,startX:ev.clientX,startY:ev.clientY,left:r.left,top:r.top,moved:false};
+            b.classList.add('zx421-dragging');
+            try{b.setPointerCapture(ev.pointerId);}catch(_){}
+            ev.preventDefault();
+        });
+        b.addEventListener('pointermove',function(ev){
+            if(!ballPointer||ballPointer.id!==ev.pointerId)return;
+            var dx=ev.clientX-ballPointer.startX,dy=ev.clientY-ballPointer.startY;
+            if(Math.abs(dx)>6||Math.abs(dy)>6)ballPointer.moved=true;
+            if(!ballPointer.moved)return;
+            var v=viewport();
+            b.style.left=clamp(ballPointer.left+dx,0,Math.max(0,v.w-48))+'px';
+            b.style.top=clamp(ballPointer.top+dy,0,Math.max(0,v.h-48))+'px';
+            ev.preventDefault();
+        });
+        function release(ev,cancelled) {
+            if(!ballPointer||ballPointer.id!==ev.pointerId)return;
+            var pointer=ballPointer;ballPointer=null;
+            b.classList.remove('zx421-dragging');
+            try{b.releasePointerCapture(ev.pointerId);}catch(_){}
+            if(cancelled)return positionBall();
+            if(pointer.moved){
+                var v=viewport(),rect=b.getBoundingClientRect();
+                var edge=rect.left+24<v.w/2?'left':'right';
+                saveBall(edge,clamp(rect.top/Math.max(1,v.h-48),0,1));
+                setSide(edge); // 悬浮球吸附到哪侧，侧栏也从哪侧展开。
+                positionBall();
+            } else setMode('sidebar');
+            ev.preventDefault();
+        }
+        b.addEventListener('pointerup',ev=>release(ev,false));
+        b.addEventListener('pointercancel',ev=>release(ev,true));
+        b.addEventListener('click',function(ev){ // 指针点击由 pointerup 处理；键盘点击在这里处理。
+            if(ev.detail===0){setMode('sidebar');}
+        });
+    }
+    function setMode(mode) {
+        mode=mode==='ball'?'ball':'sidebar';
+        set('mode',mode);
+        var box=byId('ne-21box'),ball=ensureBall();
+        if(box){box.style.display=mode==='sidebar'?'flex':'none';box.setAttribute('aria-hidden',mode==='ball'?'true':'false');}
+        if(ball){ball.classList.toggle('zx421-visible',mode==='ball');ball.setAttribute('aria-hidden',mode==='ball'?'false':'true');positionBall();}
+        try{localStorage.setItem('ZhixingSetting.showBox',mode==='ball'?'hide':'show');}catch(_){}
+        refresh();
+    }
+    function toggle() {setMode(get('mode','sidebar')==='sidebar'?'ball':'sidebar');}
+    function getMode() {return get('mode','sidebar');}
+    function openTab(tab) {
+        if(TABS.indexOf(tab)<0)tab='control';
+        set('tab',tab);
+        var box=byId('ne-21box');
+        if(!box)return;
+        box.querySelectorAll('.zx421-page').forEach(el=>{
+            var on=el.dataset.tab===tab;el.classList.toggle('zx421-active',on);el.setAttribute('aria-hidden',on?'false':'true');
+        });
+        box.querySelectorAll('.zx421-tab').forEach(el=>el.setAttribute('aria-selected',el.dataset.zx421tab===tab?'true':'false'));
+        setMode('sidebar');
+    }
+    function refresh() {
+        var box=byId('ne-21box');if(!box)return;
+        var paused=false;try{paused=localStorage.getItem('ZhixingSetting.isPaused')==='true';}catch(_){}
+        var started=window.__gptRunStarted===true||window.__gptWantStart===true;
+        var s=(typeof zx420!=='undefined'&&zx420.getReviewState)?zx420.getReviewState():{busy:false,count:0,total:0};
+        var state=s.busy?'正在核对':paused?'已暂停':started?'运行中':'待启动';
+        var lbl=byId('zx421StatusLabel');if(lbl)lbl.textContent=state;
+        var main=byId('zx421MainAction');if(main)main.textContent=!started?'▶ 开始当前任务':paused?'▶ 继续':'Ⅱ 暂停';
+        var cnt=byId('zx421ProgressText');if(cnt)cnt.textContent=(s.total?s.count+' / '+s.total+' 题':'核对尚未开始');
+        var fill=byId('zx421ProgressFill');if(fill)fill.style.width=(s.total?clamp((s.count/s.total)*100,0,100):0)+'%';
+        var ball=byId('ne21Ball');if(ball)ball.classList.toggle('zx421-working',!!s.busy);
+        var fail=0;try{fail=(window.__gptFails||[]).length;}catch(_){}
+        var chip=byId('zx421BallBadge');if(chip){chip.textContent=fail>99?'99+':String(fail);chip.style.display=fail?'block':'none';}
+    }
+    function observeLog(msg) {
+        var recent=byId('zx421Recent');
+        if(!recent)return;
+        var text=String(msg||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+        if(text.length>140)text=text.slice(0,140)+'…';
+        recent.textContent=text||'暂无活动';
+    }
+    function summary(arr) {
+        var same=0,diff=0,pending=0;
+        (arr||[]).forEach(r=>{if(r.status==='same')same++;else if(r.status==='different')diff++;else pending++;});
+        for(const [key,value] of [['zx421Same',same],['zx421Different',diff],['zx421Pending',pending]]){
+            var e=byId(key);if(e)e.textContent=String(value);
+        }
+    }
+    function mount() {
+        var box=byId('ne-21box');if(!box)return;
+        activeDocument=box.ownerDocument;
+        css(activeDocument);
+        box.classList.add('zx421-sidebar');
+        if(box.dataset.zx421Ready==='true'){ensureBall();return;}
+        box.dataset.zx421Ready='true';
+        var side=get('side','right');setSide(side);
+        setWidth(get('width','380'));
+        var ball=ensureBall(); // 先创建悬浮球，再应用显示状态。
+        var nav=box.querySelector('.zx421-footer');
+        if(nav){nav.addEventListener('click',function(e){
+            var btn=e.target.closest('[data-zx421tab]');if(!btn)return;
+            var t=btn.dataset.zx421tab;
+            if(t==='records'&&typeof zx420!=='undefined')zx420.showRecords();
+            else openTab(t);
+        });}
+        var closer=box.querySelector('#ne-21close');
+        if(closer){closer.title='收起成悬浮球';closer.setAttribute('aria-label','收起成悬浮球');}
+        var main=byId('zx421MainAction');if(main)main.addEventListener('click',function(){var btn=byId('ne-21pause');if(btn)btn.click();setTimeout(refresh,30);});
+        var sideSel=byId('zx421Side');if(sideSel){sideSel.value=side;sideSel.addEventListener('change',e=>setSide(e.target.value));}
+        var width=byId('zx421Width');if(width)width.addEventListener('input',e=>setWidth(e.target.value));
+        var resize=box.querySelector('.zx421-resize');
+        if(resize){var sizing=null;
+            resize.addEventListener('pointerdown',function(e){if(e.button!==0)return;
+                sizing={id:e.pointerId,x:e.clientX,width:box.getBoundingClientRect().width};
+                try{resize.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();
+            });
+            resize.addEventListener('pointermove',function(e){if(!sizing||sizing.id!==e.pointerId)return;
+                var d=e.clientX-sizing.x;var isLeft=box.classList.contains('zx421-left');
+                setWidth(sizing.width+(isLeft?d:-d));e.preventDefault();
+            });
+            ['pointerup','pointercancel'].forEach(type=>resize.addEventListener(type,function(e){if(sizing&&sizing.id===e.pointerId){sizing=null;try{resize.releasePointerCapture(e.pointerId);}catch(_){}}}));
+        }
+        var desired=get('mode','');
+        if(!desired){desired=(localStorage.getItem('ZhixingSetting.boxCollapsed')==='true'||localStorage.getItem('ZhixingSetting.showBox')==='hide')?'ball':'sidebar';}
+        var initialTab=get('tab','control');
+        openTab(TABS.indexOf(initialTab)>=0?initialTab:'control');
+        setMode(desired);
+        var win=activeDocument.defaultView||window;
+        win.addEventListener('resize',positionBall);
+        if(polling)clearInterval(polling);
+        polling=setInterval(function(){if(!box.isConnected){clearInterval(polling);polling=null;return;}refresh();},1300);
+        try {
+            if(typeof zx420!=='undefined' && typeof zx420.getReviewRecords==='function')
+                zx420.getReviewRecords().then(function(arr){if(box.isConnected)summary(arr);}).catch(function(){});
+        }catch(_){}
+        refresh();
+    }
+    return {mount,ensureBall,setMode,toggle,getMode,openTab,refresh,observeLog,summary,setWidth,setSide};
+})();
+
+
+function ownApiAnswer(payloadStr) {
+    return zx420.callAI(payloadStr, false).then(function (reply) {
+        return reply.answer;
     });
 }
 
@@ -994,29 +1617,10 @@ function isMobileUI() {
 }
 
 function ensureBall() {
-    try {
-        if (!isMobileUI()) return;
-        if (document.getElementById('ne21Ball')) return;
-        var el = document.createElement("div");
-        el.id = "ne21Ball";
-        el.textContent = "知";
-        el.title = "显示 / 隐藏 知行面板";
-        el.addEventListener("click", function () { try { toggleBoxVisibility(); } catch (_) { } });
-        (document.body || document.documentElement).appendChild(el);
-    } catch (_) { }
+    try { if (typeof zx421 !== 'undefined') return zx421.ensureBall(); } catch (_) {}
 }
-
 function toggleBoxVisibility() {
-    var $box = $('#ne-21box', getPanelDocument());
-    if ($box.length === 0) return;
-    if (localStorage.getItem('ZhixingSetting.showBox') === 'hide') {
-        $box.css('display', '');
-        localStorage.setItem('ZhixingSetting.showBox', 'show');
-        logger('Alt+Z 显示面板');
-    } else {
-        $box.css('display', 'none');
-        localStorage.setItem('ZhixingSetting.showBox', 'hide');
-    }
+    try { if (typeof zx421 !== 'undefined') zx421.toggle(); } catch (_) {}
 }
 $(document).on('keydown.ne21f9', function (e) {
     if (e.altKey && (e.key || '').toLowerCase() === 'z') { e.preventDefault(); toggleBoxVisibility(); }
@@ -1429,6 +2033,8 @@ function findBestFuzzyMatch(optionTexts, aiAnswer, threshold) {
 
 function findFuzzyMatchMultiple(optionTexts, aiAnswer, threshold) {
     if (!aiAnswer || !optionTexts || optionTexts.length === 0) return [];
+    var zxLetters = zx420.optionLetters(aiAnswer, optionTexts.length, true);
+    if (zxLetters.length) return zxLetters.map(function (s) { return s.charCodeAt(0)-65; });
     var _ml = gptPurgeLetters(aiAnswer);
     if (_ml.length > 1) {
         var _mi = [];
@@ -1976,19 +2582,57 @@ function showBox() {
         }
         var box_html = `
             <div id="ne-21box">
-                <div class="ne21-header" title="按住标题栏可拖动 / 按 Alt+Z 显示或隐藏面板 / 点击右侧按钮收起">
-                    <span id="ne21DragHandle" title="按住拖动面板" aria-label="拖动">⠿</span>
-                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手</h3>
+                <div class="ne21-header" title="知行侧栏 · Alt+Z 切换悬浮球">
+                    <span class="zx421-resize" title="拖动调整侧栏宽度" aria-hidden="true"></span>
+                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手 <small style="font-size:10px;opacity:.55;">4.2.1</small></h3>
                     <div class="ne21-actions">
                         <span id="ne21FailChip" class="ne21-kbd" style="display:none;color:#dc2626;" title="本次被跳过、建议手动补的题目数"></span>
-                        <span class="ne21-kbd" title="按 Alt+Z 显示/隐藏整个面板">Alt+Z</span>
+                        
                         <button id="ne-21pause" type="button" aria-label="暂停/继续" style="margin-right:4px;"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg></button>
                         <button id="ne-21close" type="button" aria-label="收起"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
                     </div>
                 </div>
+                <section class="zx421-status" aria-label="任务状态">
+                    <div class="zx421-statusline"><strong id="zx421StatusLabel">待启动</strong><span id="zx421ProgressText">核对尚未开始</span></div>
+                    <div class="zx421-progress"><span id="zx421ProgressFill"></span></div>
+                </section>
                 <div class="ne21-body">
+                  <section class="zx421-page" data-tab="control" aria-label="控制">
+                    <div class="zx421-card"><h4 class="zx421-section-title">当前任务</h4>
+                        <div class="zx421-muted">保留原有刷课与答题控制，侧栏收起不会停止任务。</div>
+                        <button id="zx421MainAction" type="button" class="zx421-main-btn">▶ 开始当前任务</button>
+                    </div>
                     <div id="ne-21notice"></div>
                     <div id="userInfo"></div>
+                    <div class="zx421-card"><h4 class="zx421-section-title">最近活动</h4>
+                        <div id="zx421Recent" class="zx421-note">暂无活动</div>
+                    </div>
+                    <details class="zx421-logdetails"><summary>展开运行日志</summary>
+                      <div id="ne-21log"></div>
+                    </details>
+                    <div id="ne-21thinking"></div>
+                  </section>
+                  <section class="zx421-page" data-tab="review" aria-label="整卷核对">
+                    <h4 class="zx421-section-title">整卷核对</h4>
+                    <div class="zx421-metrics">
+                      <div class="zx421-metric"><strong id="zx421Same">0</strong><span>一致</span></div>
+                      <div class="zx421-metric"><strong id="zx421Different">0</strong><span>不一致</span></div>
+                      <div class="zx421-metric"><strong id="zx421Pending">0</strong><span>存疑 / 未答</span></div>
+                    </div>
+                    <div id="zx421ReviewControls" class="zx421-controls"></div>
+                    <div class="zx421-card"><p class="zx421-muted">只读核对不会修改已选答案，也不会自动交卷。支持考试预览页，其他页面请使用原有功能。</p></div>
+                  </section>
+                  <section class="zx421-page" data-tab="records" aria-label="核对记录">
+                    <div id="zx421RecordsPane"><div class="zx421-muted">点击下方「记录」加载核对历史。</div></div>
+                  </section>
+                  <section class="zx421-page" data-tab="settings" aria-label="设置">
+                    <h4 class="zx421-section-title">侧栏外观</h4>
+                    <div class="zx421-card">
+                      <label class="zx421-layout-control">侧栏位置 <select id="zx421Side"><option value="right">右侧</option><option value="left">左侧</option></select></label>
+                      <label class="zx421-layout-control">侧栏宽度 <input id="zx421Width" type="range" min="320" max="480" step="10"><span id="zx421WidthLabel">380 px</span></label>
+                      <div class="zx421-sidebar-kbd">快捷键 Alt+Z：侧栏 ↔ 悬浮球。拖动悬浮球后松手自动吸附屏幕左右边缘。</div>
+                    </div>
+                    <h4 class="zx421-section-title">脚本与 API 设置</h4>
                     <div id="moreSettings" style="display:none;">
                         <label title="倍速过高可能导致异常"><select id="ZhixingSetting.rate" class="ne21-select"><option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="6">6×</option><option value="8">8×</option><option value="16">16×</option></select>视频/音频倍速</label>
                         <label title="题目作答间隔与 AI 搜题节流间隔（秒），默认 2.5 秒">
@@ -2008,45 +2652,20 @@ function showBox() {
                         <div class="ne21-group">重做</div>
                         <label title="勾选后，从头扫描时连已答的题一起重做"><input type="checkbox" id="ZhixingSetting.redo">覆盖已答题</label>
                     </div>
-                    <div id="ne-21thinking">
-                        <div class="ne21-thinking-spinner"></div>
-                        <span class="ne21-thinking-text">AI 思考中<span class="ne21-thinking-dots"><i></i><i></i><i></i></span></span>
-                    </div>
-                    <div id="ne-21log"></div>
+                  </section>
                 </div>
+                <nav class="zx421-footer" aria-label="知行页面导航">
+                  <button type="button" class="zx421-tab" data-zx421tab="control" aria-selected="true"><span class="zx421-tab-icon">⌂</span><span>控制</span></button>
+                  <button type="button" class="zx421-tab" data-zx421tab="review" aria-selected="false"><span class="zx421-tab-icon">◎</span><span>核对</span></button>
+                  <button type="button" class="zx421-tab" data-zx421tab="records" aria-selected="false"><span class="zx421-tab-icon">▤</span><span>记录</span></button>
+                  <button type="button" class="zx421-tab" data-zx421tab="settings" aria-selected="false"><span class="zx421-tab-icon">⚙</span><span>设置</span></button>
+                </nav>
             </div>
         `;
         $(box_html).appendTo('body');
+        try { zx421.mount(); zx420.attachPanel(); } catch (e) { console.warn('[知行4.2.1] 侧栏初始化失败',e); }
         try { if (isMobileUI()) { $('#ne-21box').addClass('ne21-mobile'); } } catch (_) { }
         try { $(document).off('click.ne21redo').on('click.ne21redo', '#ne21RedoBtn', function (e) { e.preventDefault(); e.stopPropagation(); gptRedoAll(); }); } catch (_) { }
-
-        (function () {
-            var $box = $('#ne-21box');
-
-            try {
-                var savedPos = localStorage.getItem('ZhixingSetting.boxPosition');
-                if (savedPos) {
-                    var pos = JSON.parse(savedPos);
-                    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
-                        var vw = window.innerWidth, vh = window.innerHeight;
-                        var w = $box.outerWidth() || 340;
-
-                        var nx = Math.max(40 - w, Math.min(pos.left, vw - 40));
-                        var ny = Math.max(0, Math.min(pos.top, vh - 40));
-                        $box.css({ left: nx + 'px', top: ny + 'px', right: 'auto' });
-                    }
-                }
-            } catch (_) {}
-
-            if (localStorage.getItem('ZhixingSetting.boxCollapsed') === 'true') {
-                $box.addClass('ne21-collapsed');
-                $('#ne-21close').html('<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>').attr('aria-label', '展开');
-            }
-
-            if (localStorage.getItem('ZhixingSetting.showBox') === 'hide') {
-                $box.css('display', 'none');
-            }
-        })();
 
         function gptRefreshPauseBtn() {
             var _started = window.__gptRunStarted === true || window.__gptWantStart === true || !gptManualStartOn();
@@ -2097,85 +2716,18 @@ function showBox() {
 
         try { gptRefreshPauseBtn(); } catch (_) { }
 
-        $('#ne-21close').on('mousedown', function (e) {
+        $('#ne-21close').on('click', function(e) {
             e.stopPropagation();
-        }).on('click', function (e) {
-            e.stopPropagation();
-            var collapsed = $('#ne-21box').toggleClass('ne21-collapsed').hasClass('ne21-collapsed');
-            $(this).html(collapsed ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>' : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg>');
-            $(this).attr('aria-label', collapsed ? '展开' : '收起');
-
-            try { localStorage.setItem('ZhixingSetting.boxCollapsed', collapsed ? 'true' : 'false'); } catch (_) {}
+            try { zx421.setMode('ball'); } catch (err) { console.warn('[知行4.2.1] 收起失败',err); }
         });
-
-        (function () {
-            var $box = $('#ne-21box');
-            var $header = $box.find('.ne21-header');
-            var dragging = false, sx = 0, sy = 0, sl = 0, st = 0, pw = 0;
-
-            function startDrag(e) {
-                var pe = e.originalEvent || e;
-                if (pe.button !== undefined && pe.button !== 0 && pe.pointerType !== "touch") return;
-                if ($(pe.target).closest('button, a, input, select, textarea').length) return;
-                var el = $box[0];
-                if (!el) return;
-                var rect = el.getBoundingClientRect();
-                dragging = true;
-                sx = pe.clientX; sy = pe.clientY;
-                sl = rect.left; st = rect.top; pw = rect.width;
-                $box.addClass('ne21-dragging').css({ left: sl + 'px', top: st + 'px', right: 'auto', width: pw + 'px' });
-                try { $("body").css("user-select", "none"); } catch (_) { }
-                if (e.preventDefault) e.preventDefault();
-            }
-
-            function moveDrag(e) {
-                if (!dragging) return;
-                var pe = e.originalEvent || e;
-                var nx = sl + (pe.clientX - sx);
-                var ny = st + (pe.clientY - sy);
-                var vw = window.innerWidth, vh = window.innerHeight;
-                nx = Math.max(56 - pw, Math.min(nx, vw - 56));
-                ny = Math.max(0, Math.min(ny, vh - 44));
-                $box.css({ left: nx + 'px', top: ny + 'px' });
-                if (e.preventDefault) e.preventDefault();
-            }
-
-            function endDrag() {
-                if (!dragging) return;
-                dragging = false;
-                $box.removeClass('ne21-dragging');
-                try { $("body").css("user-select", ""); } catch (_) { }
-                try {
-                    var r = $box[0].getBoundingClientRect();
-                    localStorage.setItem('ZhixingSetting.boxPosition', JSON.stringify({ left: r.left, top: r.top }));
-                } catch (_) { }
-            }
-
-            if (window.PointerEvent) {
-                $header.on('pointerdown', startDrag);
-                $(document).on('pointermove.ne21drag', moveDrag);
-                $(document).on('pointerup.ne21drag pointercancel.ne21drag', endDrag);
-            } else {
-                $header.on('touchstart', function (e) { startDrag(e); });
-                $(document).on('touchmove.ne21drag', moveDrag);
-                $(document).on('touchend.ne21drag touchcancel.ne21drag', endDrag);
-                $header.on('mousedown', startDrag);
-                $(document).on('mousemove.ne21drag', moveDrag);
-                $(document).on('mouseup.ne21drag', endDrag);
-            }
-        })();
 
         (function () {
             var moreSettings = document.getElementById('moreSettings');
             var userInfo = document.getElementById('userInfo');
             if (!moreSettings || !userInfo) return;
 
-            var isSettingsVisible = false;
             $('#ne-21box').on('click', '#moreSettingsBtn', function () {
-                userInfo.style.display = isSettingsVisible ? 'block' : 'none';
-                moreSettings.style.display = isSettingsVisible ? 'none' : 'block';
-                this.textContent = isSettingsVisible ? '设置' : '返回';
-                isSettingsVisible = !isSettingsVisible;
+                try { zx421.openTab('settings'); } catch (_) { }
             });
 
             if (localStorage.getItem('ZhixingSetting.alterTitle') === null) {
@@ -2305,7 +2857,7 @@ function showBox() {
             + '</select>'
             + '<select id="ne21ApiEffort" class="ne21-select" style="width:100%;margin-bottom:8px;">'
             + '<option value="low">思考强度：低</option>'
-            + '<option value="high">思考强度：高</option>'
+            + '<option value="high">思考强度：高</option>' + '<option value="max">思考强度：最高（手动）</option>'
             + '</select>'
             + '<div id="ne21ApiEffortHint" style="font-size:11px;color:rgba(15,23,42,.52);margin:-4px 0 8px;line-height:1.5;"></div>'
             + '<label style="display:flex;align-items:center;gap:6px;margin:2px 0 10px;font-size:11.5px;color:rgba(15,23,42,.7);"><input type="checkbox" id="ne21ApiVision"> 发送图片（读图）</label>'
@@ -2344,7 +2896,7 @@ function showBox() {
             });
             $('#ne21ApiAuth').val(OWN_API.authStyle || 'bearer');
             try {
-                var _e0 = (String(OWN_API.effort || 'low').toLowerCase() === 'high') ? 'high' : 'low';
+                var _e0 = ['low','high','max'].includes(String(OWN_API.effort)) ? String(OWN_API.effort) : 'low';
                 $('#ne21ApiEffort').val(_e0);
                 var _effHint = function () {
                     var _v = $('#ne21ApiEffort').val() || 'low';
@@ -2486,6 +3038,7 @@ function logger(str, color) {
     var _stick = true
     if (_el) _stick = (_el.scrollHeight - _el.scrollTop - _el.clientHeight) < 32
     $log.append($p)
+    try { if(typeof zx421!=='undefined')zx421.observeLog(str); } catch (_) {}
     if (_el && _stick) { try { _el.scrollTop = _el.scrollHeight } catch (_) { } }
     return $p
 }
@@ -3444,7 +3997,7 @@ function startDoPhoneTimu(index, TimuList) {
             _answerTmpArr = $(TimuList[index]).find('.answerList.singleChoice li')
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -3499,7 +4052,7 @@ function startDoPhoneTimu(index, TimuList) {
             _answerTmpArr = $(TimuList[index]).find('.answerList.multiChoice li')
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -3534,7 +4087,7 @@ function startDoPhoneTimu(index, TimuList) {
                         })
                         let _matchedAny = false
                         $.each(_answerTmpArr, (i, t) => {
-                            if (agrs.indexOf(_multiOptions[i]) != -1) {
+                            if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) != -1) {
                                 _matchedAny = true
                                 setTimeout(() => { $(_answerTmpArr[i]).click() }, 300)
                             }
@@ -4534,7 +5087,7 @@ function doHomeWork(index, TiMuList) {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -4599,7 +5152,7 @@ function doHomeWork(index, TiMuList) {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -4635,7 +5188,7 @@ function doHomeWork(index, TiMuList) {
                     })
                     let _matchedAny = false
                     $.each(_answerTmpArr, (i, t) => {
-                        if (agrs.indexOf(_multiOptions[i]) != -1) {
+                        if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) != -1) {
                             _matchedAny = true
                             setTimeout(() => {
                                 let check = $(_answerTmpArr[i]).parent().find('span').attr('class') || ''
@@ -5019,7 +5572,7 @@ function missonExam() {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -5088,7 +5641,7 @@ function missonExam() {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -5108,7 +5661,7 @@ function missonExam() {
                     })
                     let _matchedAny = false
                     $.each(_answerTmpArr, (i, t) => {
-                        if (agrs.indexOf(_multiOptions[i]) != -1) {
+                        if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) != -1) {
                             _matchedAny = true
 
                             if (localStorage.getItem('ZhixingSetting.goodStudent') === 'true') {
@@ -5537,7 +6090,7 @@ function doExamPreview(index, TiMuList) {
             }
             let mergedAnswers = []
             _answerTmpArr.each(function () {
-                mergedAnswers.push($(this).text().replace(/[ABCD]/g, '').trim())
+                mergedAnswers.push(zx420.optionHtml(this))
             })
             let prompt = buildPrompt({ type: '单选题', question: _question, options: mergedAnswers })
             for (let i = 0; i < _answerTmpArr.length; i++) {
@@ -5592,7 +6145,7 @@ function doExamPreview(index, TiMuList) {
             }
             let mergedAnswers = []
             _answerTmpArr.each(function () {
-                mergedAnswers.push($(this).text().replace(/[ABCD]/g, '').trim())
+                mergedAnswers.push(zx420.optionHtml(this))
             })
             let prompt = buildPrompt({ type: '多选题', question: _question, options: mergedAnswers, answer_format: "用'|'分割多个答案" })
             for (let i = 0; i < _answerTmpArr.length; i++) {
@@ -5620,7 +6173,7 @@ function doExamPreview(index, TiMuList) {
                 })
                 let _matchedAny = false
                 $.each(_answerTmpArr, function (i, t) {
-                    if (agrs.indexOf(_multiOptions[i]) !== -1) {
+                    if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) !== -1) {
                         _matchedAny = true
                         if (localStorage.getItem('ZhixingSetting.goodStudent') === 'true') {
                             $(_answerTmpArr[i]).parent().find('span').css('font-weight', 'bold')
@@ -5984,7 +6537,7 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
     if (subType === 0 || subType === 3) {
         let optionTexts = [];
         $options.each(function () {
-            optionTexts.push($(this).text().replace(/[ABCD]/g, '').trim());
+            optionTexts.push(zx420.optionHtml(this));
         });
         let typeStr = subType === 0 ? '单选题' : '判断题';
         let answer_format = subType === 0 ? undefined : '只回答正确或错误';
@@ -6022,7 +6575,7 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
     } else if (subType === 1) {
         let optionTexts = [];
         $options.each(function () {
-            optionTexts.push($(this).text().replace(/[ABCD]/g, '').trim());
+            optionTexts.push(zx420.optionHtml(this));
         });
         let prompt = buildPrompt({ type: '多选题', question: fullQuestion, options: optionTexts, answer_format: "用'|'分割多个答案" });
 
@@ -6033,7 +6586,7 @@ function processSubQuestions(subIndex, $subQuestions, parentQuestion, getDelay, 
             });
             let _matchedAny = false;
             $options.each((i, t) => {
-                if (agrs.indexOf(_multiOptions[i]) != -1) {
+                if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) != -1) {
                     _matchedAny = true;
                     let check = $(t).parent().find('span').attr('class') || '';
                     if (check.indexOf('check_answer_dx') == -1) {
@@ -6103,6 +6656,7 @@ function gptApiConfigured() {
         return true;
     } catch (_) { return false; }
 }
+try { if (localStorage.getItem('ZhixingSetting.zx420FirstRun') !== '1') { localStorage.setItem('ZhixingSetting.bankOn','false'); localStorage.setItem('ZhixingSetting.zx420FirstRun','1'); } } catch (_) {}
 function isBankOn() {
     try {
         var v = localStorage.getItem('ZhixingSetting.bankOn');
@@ -6320,7 +6874,7 @@ function getAnswer(_t, _q, retryCount = 0, _skipBank) {
                     if (requestCompleted) return;
                     requestCompleted = true;
                     clearTimeout(longWaitTimer);
-                    updateLogEntry($thinkingLog, "答案:" + ownAnswer, "purple");
+                    updateLogEntry($thinkingLog, "答案:" + String(ownAnswer).replace(/[&<>"']/g, function(c) { return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]; }), "purple");
                     resolve(ownAnswer);
                 }).catch(function (ownErr) {
                     if (requestCompleted) return;
@@ -6535,7 +7089,7 @@ function startDoWork(index, doms, c, TiMuList) {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -6571,7 +7125,7 @@ function startDoWork(index, doms, c, TiMuList) {
 
             let mergedAnswers = [];
             _answerTmpArr.each(function () {
-                var answerText = $(this).text().replace(/[ABCD]/g, '').trim();
+                var answerText = zx420.optionHtml(this);
                 mergedAnswers.push(answerText);
             });
             mergedAnswers = mergedAnswers.join("|");
@@ -6588,7 +7142,7 @@ function startDoWork(index, doms, c, TiMuList) {
                 })
                 let _matchedAny = false
                 $.each(_answerTmpArr, (i, t) => {
-                    if (agrs.indexOf(_multiOptions[i]) != -1) {
+                    if (_multiOptions[i] && agrs.indexOf(_multiOptions[i]) != -1) {
                         _matchedAny = true
                         $(_answerTmpArr[i]).parent().click();
                         _a.push(['A', 'B', 'C', 'D', 'E', 'F', 'G'][i])
