@@ -8,9 +8,6 @@
     } catch (_) { }
   }
   mark();
-  if (!document.documentElement) {
-    document.addEventListener('DOMContentLoaded', mark, { once: true });
-  }
 
   var hideCss = [
     'html[data-zx-ext="1"] body #ne-21box.zx421-sidebar,',
@@ -33,7 +30,14 @@
     } catch (_) { }
   }
   ensureStyle();
-  setInterval(ensureStyle, 1500);
+  if (!document.documentElement) {
+    var observer = new MutationObserver(function () {
+      if (!document.documentElement) return;
+      observer.disconnect();
+      ensureStyle();
+    });
+    observer.observe(document, { childList: true });
+  }
 
   var pending = new Map();
   var seq = 0;

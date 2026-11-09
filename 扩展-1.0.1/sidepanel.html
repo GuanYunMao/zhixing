@@ -12,14 +12,18 @@
     <span class="logo">知</span>
     <div>
       <h1>知行 · 网课助手</h1>
-      <p>4.2.7 · 侧栏扩展 1.0.0</p>
+      <p>4.2.7 · 侧栏扩展 1.0.1</p>
     </div>
   </div>
-  <span id="conn" class="pill pill-muted">连接中</span>
+  <span id="conn" class="pill pill-muted" role="status">连接中</span>
 </header>
 
 <main>
   <section class="card status-card">
+    <div class="connection-help">
+      <p id="connHint" class="muted" role="status"></p>
+      <button id="retryConn" class="link" type="button" hidden>重连</button>
+    </div>
     <div class="status-head">
       <div>
         <span class="eyebrow">当前任务</span>
@@ -34,6 +38,8 @@
       <span id="reviewBadge" class="muted"></span>
     </div>
     <button id="mainBtn" class="primary" type="button" disabled>▶ 开始当前任务</button>
+    <label class="check continuation"><input id="autoContinue" type="checkbox" disabled>跨题自动继续 <small>仅当前考试标签页</small></label>
+    <label class="check continuation" id="examTurnRow" hidden><input id="examTurn" type="checkbox" disabled>自动点击下一题</label>
     <button id="reviewBtn" class="ghost" type="button" disabled>◎ 只读核对整卷</button>
   </section>
 
@@ -86,10 +92,10 @@
     <p id="apiMsg" class="muted"></p>
   </section>
 
-  <section class="card log-card">
-    <div class="section-head"><h2>运行日志</h2><span id="logDot" class="dot"></span></div>
+  <details class="card log-card">
+    <summary>运行日志<span id="logDot" class="dot"></span></summary>
     <pre id="log">暂无日志</pre>
-  </section>
+  </details>
 </main>
 
 <footer>原生侧栏 · 页面内容会真正缩窄 · 需安装 4.2.7 用户脚本</footer>

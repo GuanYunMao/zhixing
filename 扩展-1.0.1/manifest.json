@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "知行 · 网课助手 侧栏版",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "在 Edge 原生侧栏中控制知行脚本；需要同时安装 4.2.7 用户脚本。",
   "minimum_chrome_version": "114",
   "permissions": ["sidePanel", "tabs", "storage"],

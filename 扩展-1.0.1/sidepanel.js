@@ -10,6 +10,12 @@
   var apiLoaded = false;
   var pollTimer = null;
   var statsTimer = null;
+  var refreshing = false;
+  var failures = 0;
+  var generation = 0;
+  var probeTimer;
+  var runBusy = false;
+  var lastAutoAttempt = 0;
 
   function setConn(text, cls) {
     var el = $('conn');
@@ -34,18 +40,17 @@
     }
   }
 
-  function call(cmd, payload) {
-    return new Promise(async function (resolve, reject) {
-      var tab = currentTab || await getActiveTab();
+  function call(cmd, payload, tab = currentTab) {
+    return new Promise(function (resolve, reject) {
       if (!tab || !tab.id) { reject(new Error('找不到当前标签页')); return; }
       if (!/^https?:/i.test(tab.url || '')) { reject(new Error('当前标签页不是网页')); return; }
       var id = 'sp' + Date.now().toString(36) + '-' + (++seq);
       try {
-        chrome.tabs.sendMessage(tab.id, { source: 'zx-sidepanel', id: id, cmd: cmd, payload: payload }, function (resp) {
+        chrome.tabs.sendMessage(tab.id, { source: 'zx-sidepanel', id: id, cmd: cmd, payload: payload }, { frameId: 0 }, function (resp) {
           var err = chrome.runtime.lastError;
           if (err) { reject(new Error('页面脚本未连接（' + err.message + '）')); return; }
           if (!resp) { reject(new Error('页面脚本未响应')); return; }
-          if (!resp.ok) { reject(new Error(resp.error || '命令失败')); return; }
+          if (!resp.ok) { reject(new Error(resp.error || (resp.data && resp.data.error) || '命令失败')); return; }
           resolve(resp.data);
         });
       } catch (e) {
@@ -59,22 +64,32 @@
     if (disabled) {
       if (main) main.disabled = true;
       if (review) review.disabled = true;
+      ['autoContinue', 'examTurn', 'rate', 'saveApi', 'refreshStats'].forEach(function (id) { $(id).disabled = true; });
     }
   }
 
   function renderStatus(s) {
     lastState = s;
     connected = true;
+    failures = 0;
     setConn('已连接', 'pill-ok');
+    $('retryConn').hidden = true;
+    setText('connHint', s.bridgeVersion ? '' : '请手动覆盖安装本次的 4.2.7 脚本，以启用跨题继续。');
+    $('autoContinue').disabled = !s.examTask || runBusy;
+    $('autoContinue').checked = !!s.autoContinue;
+    $('examTurnRow').hidden = !s.singleQuestion;
+    $('examTurn').disabled = !s.singleQuestion || runBusy;
+    $('examTurn').checked = !!s.examTurn;
+    ['rate', 'saveApi', 'refreshStats'].forEach(function (id) { $(id).disabled = false; });
     if (!s) return;
     setText('state', s.state || '待启动');
     setText('pageTitle', s.title || s.url || '当前页面');
-    var kind = s.examPreview ? '考试预览' : (String(s.url || '').indexOf('/mycourse/') !== -1 ? '课程页' : '网页');
+    var kind = s.examPreview ? '考试预览' : (s.examTask ? '逐题考试' : (String(s.url || '').indexOf('/mycourse/') !== -1 ? '课程页' : '网页'));
     setText('pageKind', kind);
     var review = s.review || { busy: false, paused: false, count: 0, total: 0 };
     var main = $('mainBtn');
     if (main) {
-      main.disabled = !!review.busy;
+      main.disabled = !!review.busy || runBusy || s.ready === false;
       if (review.busy) main.textContent = '核对运行中';
       else if (s.paused) main.textContent = '▶ 继续当前任务';
       else if (s.started) main.textContent = 'Ⅱ 暂停当前任务';
@@ -98,31 +113,60 @@
     if (log) log.textContent = s.log || '暂无日志';
     var dot = $('logDot');
     if (dot) dot.className = 'dot' + (s.started && !s.paused ? ' live' : '');
-    if (s.started) {
-      var mc = $('mainBtn');
-      if (mc && !review.busy && !s.paused) mc.disabled = false;
-    }
   }
 
   async function refreshStatus() {
+    if (refreshing || runBusy) return;
+    refreshing = true;
+    var epoch = generation;
     try {
-      await getActiveTab();
-      var s = await call('status');
+      var tab = await getActiveTab();
+      if (epoch !== generation) return;
+      var s = await call('status', null, tab);
+      if (epoch !== generation) return;
+      if (!s) throw new Error('页面状态为空');
+      var wasConnected = connected;
       renderStatus(s);
+      if (!wasConnected) refreshStats();
       if (!apiLoaded) loadApi();
+      if (s.autoContinue && s.ready && !s.started && !s.paused && !(s.review && s.review.busy) &&
+          (!lastAutoAttempt || lastAutoAttempt.documentId !== s.documentId || Date.now() - lastAutoAttempt.time >= 6500)) {
+        lastAutoAttempt = { documentId: s.documentId, time: Date.now() };
+        try {
+          var resumed = await call('resumeExam', { documentId: s.documentId }, tab);
+          if (epoch === generation && resumed) renderStatus(resumed);
+        } catch (e) {
+          if (epoch === generation) setText('connHint', e.message);
+        }
+      }
     } catch (e) {
+      if (epoch !== generation) return;
       connected = false;
-      setConn('未连接', 'pill-bad');
+      failures += 1;
+      setConn(failures >= 4 ? '未连接' : '重连中…', failures >= 4 ? 'pill-bad' : 'pill-warn');
       setButtonsDisabled(true);
-      setText('state', '无法连接');
-      setText('pageTitle', e && e.message ? e.message : String(e));
-      setText('pageKind', '—');
-      var main = $('mainBtn');
-      if (main) main.textContent = '▶ 开始当前任务';
-      var rb = $('reviewBtn');
-      if (rb) rb.disabled = true;
-      setText('statsHint', '请确认已安装 4.2.7 用户脚本，并刷新学习通页面。');
+      $('retryConn').hidden = false;
+      setText('connHint', failures >= 4 ? e.message : '正在等待页面脚本响应。');
+    } finally {
+      refreshing = false;
+      if (epoch !== generation) scheduleProbe();
     }
+  }
+
+  function scheduleProbe() {
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(refreshStatus, 350);
+  }
+
+  function reconnect() {
+    generation += 1;
+    failures = 0;
+    connected = false;
+    apiLoaded = false;
+    lastAutoAttempt = 0;
+    setButtonsDisabled(true);
+    setConn('重连中…', 'pill-warn');
+    scheduleProbe();
   }
 
   function renderStats(s) {
@@ -136,11 +180,13 @@
   }
 
   async function refreshStats() {
+    if (!connected) return;
+    var epoch = generation;
     try {
       var s = await call('reviewStats');
-      renderStats(s);
+      if (epoch === generation) renderStats(s);
     } catch (_) {
-      setText('statsHint', '暂时读不到核对记录。');
+      if (epoch === generation) setText('statsHint', '暂时读不到核对记录。');
     }
   }
 
@@ -160,23 +206,42 @@
   }
 
   async function loadApi() {
+    var epoch = generation;
     try {
       var a = await call('apiGet');
-      renderApi(a);
+      if (epoch === generation) renderApi(a);
     } catch (_) { }
   }
 
-  async function toggleRun() {
+  async function runCommand(cmd, payload) {
+    if (!connected || runBusy) return;
+    var epoch = generation;
+    runBusy = true;
     var btn = $('mainBtn');
-    if (btn) btn.disabled = true;
+    btn.disabled = true;
+    $('autoContinue').disabled = true;
+    $('examTurn').disabled = true;
     try {
-      await call('toggle');
-      await refreshStatus();
+      var s = await call(cmd, payload);
+      if (epoch === generation && s && s.state) renderStatus(s);
     } catch (e) {
-      setText('pageTitle', e.message || String(e));
+      if (epoch === generation) setText('connHint', e.message);
     } finally {
-      if (btn) btn.disabled = false;
+      runBusy = false;
+      if (connected && epoch === generation) {
+        btn.disabled = !!(lastState.review && lastState.review.busy) || lastState.ready === false;
+        $('autoContinue').disabled = !lastState.examTask;
+        $('autoContinue').checked = !!lastState.autoContinue;
+        $('examTurn').disabled = !lastState.singleQuestion;
+        $('examTurn').checked = !!lastState.examTurn;
+      }
+      scheduleProbe();
     }
+  }
+
+  function toggleRun() {
+    var s = lastState;
+    if (s) runCommand('toggle', s.documentId ? { documentId: s.documentId, started: s.started, paused: s.paused } : null);
   }
 
   async function reviewAction() {
@@ -191,7 +256,7 @@
     } catch (e) {
       setText('statsHint', e.message || String(e));
     } finally {
-      rb.disabled = !(lastState && lastState.examPreview);
+      rb.disabled = !connected || !(lastState && lastState.examPreview);
     }
   }
 
@@ -218,6 +283,16 @@
   }
 
   function bind() {
+    $('retryConn').addEventListener('click', function () {
+      reconnect();
+      refreshStatus();
+    });
+    $('autoContinue').addEventListener('change', function (event) {
+      runCommand('setContinue', { documentId: lastState.documentId, enabled: event.target.checked });
+    });
+    $('examTurn').addEventListener('change', function (event) {
+      runCommand('setExamTurn', { documentId: lastState.documentId, enabled: event.target.checked });
+    });
     var main = $('mainBtn');
     if (main) main.addEventListener('click', toggleRun);
     var rb = $('reviewBtn');
@@ -238,16 +313,10 @@
       k.type = text ? 'text' : 'password';
       show.textContent = text ? '隐藏' : '显示';
     });
-    chrome.tabs.onActivated.addListener(function () {
-      apiLoaded = false;
-      refreshStatus();
-      refreshStats();
-    });
+    chrome.tabs.onActivated.addListener(reconnect);
     chrome.tabs.onUpdated.addListener(function (tabId, info, tab) {
-      if (info.status === 'complete' && tab.active) {
-        apiLoaded = false;
-        refreshStatus();
-      }
+      if (tab.active && (!currentTab || tabId === currentTab.id) &&
+          (info.status === 'loading' || info.status === 'complete' || info.url)) reconnect();
     });
   }
 
@@ -255,7 +324,6 @@
     bind();
     setConn('连接中', 'pill-muted');
     await refreshStatus();
-    try { renderStats(await call('reviewStats')); } catch (_) { }
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(refreshStatus, 1500);
     if (statsTimer) clearInterval(statsTimer);

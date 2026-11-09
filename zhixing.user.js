@@ -778,26 +778,153 @@ var zx420 = (function () {
         });
     }
 
+    function dataUrlSvgText(data) {
+        const s = String(data || '');
+        const comma = s.indexOf(',');
+        if (comma < 0) throw new Error('SVG data URL 无效');
+        const meta = s.slice(5, comma);
+        const payload = s.slice(comma + 1);
+        if (/;base64/i.test(meta)) {
+            const bin = window.atob(payload);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new TextDecoder('utf-8').decode(bytes);
+        }
+        return decodeURIComponent(payload);
+    }
+    function rasterToPngDataUrl(dataUrl) {
+        return new Promise(function (resolve, reject) {
+            try {
+                const image = new Image();
+                image.onload = function () {
+                    try {
+                        const w = Math.max(1, image.naturalWidth || image.width || 1);
+                        const h = Math.max(1, image.naturalHeight || image.height || 1);
+                        const scale = Math.min(1, 2200 / Math.max(w, h));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, Math.round(w * scale));
+                        canvas.height = Math.max(1, Math.round(h * scale));
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch (e) { reject(e); }
+                };
+                image.onerror = function () { reject(new Error('图片解码失败')); };
+                image.src = dataUrl;
+            } catch (e) { reject(e); }
+        });
+    }
+
+    function sniffImageMime(bytes) {
+        try {
+            const b = Array.from(bytes || []).slice(0, 32);
+            if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image/png';
+            if (b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8) return 'image/jpeg';
+            if (b.length >= 4 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+            if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+                b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+            if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4D) return 'image/bmp';
+            if (b.length >= 12 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+                const brand = String.fromCharCode(b[8], b[9], b[10], b[11] || 32).toLowerCase();
+                if (/^(avif|avis|heic|heix|mif1)$/.test(brand)) return 'image/avif';
+            }
+            const head = new TextDecoder('utf-8').decode(new Uint8Array(b)).trim();
+            if (/^(?:<\?xml|<svg\b)/i.test(head)) return 'image/svg+xml';
+        } catch (_) { }
+        return '';
+    }
+
+    function blobToPngDataUrl(blob) {
+        return new Promise(function (resolve, reject) {
+            let url = '';
+            try {
+                url = URL.createObjectURL(blob);
+                const image = new Image();
+                image.onload = function () {
+                    try {
+                        const w = Math.max(1, image.naturalWidth || image.width || 1);
+                        const h = Math.max(1, image.naturalHeight || image.height || 1);
+                        const scale = Math.min(1, 2200 / Math.max(w, h));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, Math.round(w * scale));
+                        canvas.height = Math.max(1, Math.round(h * scale));
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch (e) { reject(e); }
+                    finally { try { URL.revokeObjectURL(url); } catch (_) { } }
+                };
+                image.onerror = function () {
+                    try { URL.revokeObjectURL(url); } catch (_) { }
+                    reject(new Error('图片解码失败'));
+                };
+                image.src = url;
+            } catch (e) {
+                if (url) { try { URL.revokeObjectURL(url); } catch (_) { } }
+                reject(e);
+            }
+        });
+    }
+
     function readBlob(blob) {
+        if (!blob || !blob.size) return Promise.reject(new Error('空图片'));
+        if (blob.size > MAX_IMAGE_BYTES) return Promise.reject(new Error('图片大于 8MB'));
+        const rawType = String(blob.type || '').toLowerCase().trim();
+        const typeList = rawType.split(/[,;]\s*/).filter(Boolean);
+        // GM_xmlhttpRequest 偶尔返回 “application/octet-stream, image/jpeg” 这种复合 Content-Type。
+        const type = typeList.find(function (t) { return /^image\//.test(t); }) || typeList[0] || '';
+        // <picture><source> 之外的音视频资源不应被当作图片塞进 image_url。
+        if (/^(video|audio)\//i.test(type)) return Promise.reject(new Error('不是图片：' + type));
+        // 接口只接受 png/jpeg/webp/gif；SVG 必须是 PNG 后才能发。
+        if (type === 'image/svg+xml') {
+            return Promise.resolve().then(function () { return blob.text(); }).then(function (svg) { return svgToPngDataUrl(svg); });
+        }
+        if (!type || type === 'application/octet-stream') {
+            return blob.slice(0, 512).arrayBuffer().then(function (buf) {
+                const mime = sniffImageMime(new Uint8Array(buf));
+                if (mime === 'image/svg+xml') return blob.text().then(function (svg) { return svgToPngDataUrl(svg); });
+                if (mime) return readBlob(blob.slice(0, blob.size, mime));
+                return blobToPngDataUrl(blob);
+            });
+        }
+        if (type && !/^image\//.test(type) && type !== 'application/octet-stream') {
+            return Promise.reject(new Error('不是图片：' + type));
+        }
         return new Promise((resolve, reject) => {
-            if (!blob || !blob.size) return reject(new Error('空图片'));
-            if (blob.size > MAX_IMAGE_BYTES) return reject(new Error('图片大于 8MB'));
-            // <picture><source> 之外的音视频资源不应被当作图片塞进 image_url。
-            if (blob.type && /^(video|audio)\//i.test(blob.type)) return reject(new Error('不是图片：' + blob.type));
             const fr = new FileReader();
-            fr.onload = () => resolve(String(fr.result || ''));
+            fr.onload = () => {
+                const data = String(fr.result || '');
+                if (/^data:image\/svg\+xml/i.test(data)) {
+                    try { svgToPngDataUrl(dataUrlSvgText(data)).then(resolve, reject); } catch (e) { reject(e); }
+                    return;
+                }
+                if (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(data)) { resolve(data); return; }
+                if (/^data:image\//i.test(data)) { rasterToPngDataUrl(data).then(resolve, reject); return; }
+                reject(new Error('不是图片：' + (type || 'unknown')));
+            };
             fr.onerror = () => reject(new Error('图片读取失败'));
-            fr.readAsDataURL(blob);
+            const readType = /^image\//.test(type) ? type : '';
+            const readBlobObj = readType && typeof blob.slice === 'function' ? blob.slice(0, blob.size, readType) : blob;
+            fr.readAsDataURL(readBlobObj);
         });
     }
 
     function imageDataUrl(src) {
         const url = String(src || '').trim();
         if (!url || url === MEDIA_MISSING) return Promise.reject(new Error('图片元素无可读取地址（可能是未完成懒加载/跨域画布）'));
-        if (/^data:image\/(png|jpeg|webp|gif);base64,/i.test(url)) {
+        if (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(url)) {
             if (url.length > MAX_IMAGE_BYTES * 1.4) return Promise.reject(new Error('内联图片太大'));
             return Promise.resolve(url);
         }
+        if (/^data:image\/svg\+xml[;,]/i.test(url)) {
+            try { return svgToPngDataUrl(dataUrlSvgText(url)); }
+            catch (e) { return Promise.reject(e); }
+        }
+        if (/^data:image\//i.test(url)) return rasterToPngDataUrl(url);
         const abs = new URL(url, location.href).href;
         if(!/^(https?:|blob:)/i.test(abs))return Promise.reject(new Error('图片地址协议不支持'));
         // blob: 对同一浏览器环境有效，先试浏览器原生 fetch。
@@ -1035,7 +1162,18 @@ var zx420 = (function () {
         // 读图条件：显式开启；auto 模式以 /models 的 input_modalities 为准，未知时才按官方的 deepseek-flash 兜底。
         const visionCapable = OWN_API.visionSupported === false ? false : (OWN_API.visionSupported === true || model === 'deepseek-flash');
         const wantImages = OWN_API.vision !== false && (OWN_API.vision === true || (OWN_API.vision === 'auto' && visionCapable));
-        let prepared = await prepareMessages(q, wantImages);
+        let prepared;
+        try {
+            prepared = await prepareMessages(q, wantImages);
+        } catch (prepErr) {
+            // 图片读不到/格式不支持时，不要卡住整题；降级纯文字继续，是否不确定交给模型和人工核对。
+            if (prepErr && prepErr.code === 'MEDIA_INCOMPLETE') {
+                try { log('题目图片不完整，已改纯文字继续：' + prepErr.message, 'orange'); } catch (_) { }
+                prepared = await prepareMessages(q, false);
+            } else {
+                throw prepErr;
+            }
+        }
         const eff = ['low','high','max'].includes(String(OWN_API.effort)) ? String(OWN_API.effort) : 'low';
         const system = review
             ? '你是数学题目独立核对助手。请根据题目和 A/B/C/D 选项作答，只输出严格的 json 对象，不要解释额外文本。格式示例：{"selected":["B"],"explanation":"简短的可核对依据","uncertain":false}。多选题 selected 可有多个字母；题目信息不足时返回 selected:[] 且 uncertain:true。'
@@ -1053,8 +1191,24 @@ var zx420 = (function () {
             reply = await apiRequestAny(body, timeout);
         } catch (e) {
             let lastErr = e;
+            const errText = String(lastErr && lastErr.message || lastErr);
+            // 图片格式被接口拒绝时，不要误判成 thinking 参数问题；先去掉图片再试一次。
+            const imageRejected = /unsupported image|image format|uploaded.*image|invalid.*image/i.test(errText);
+            if (imageRejected) {
+                try { log('接口不接受当前图片格式，已去掉图片改为纯文字重试', 'orange'); } catch (_) {}
+                try {
+                    const content = body.messages && body.messages[1] && body.messages[1].content;
+                    if (Array.isArray(content)) {
+                        const kept = content.filter(function (p) { return p && p.type !== 'image_url'; });
+                        if (!kept.length) kept.push({ type: 'text', text: '（接口不支持当前图片，请根据题干文字作答）' });
+                        body.messages[1].content = kept;
+                    }
+                    delete body.thinking; delete body.reasoning_effort;
+                    reply = await apiRequestAny(body, timeout);
+                } catch (e2) { lastErr = e2; }
+            }
             // 兼容服务对 thinking / reasoning_effort 直接 400：去掉扩展参数重试一次。
-            if (body.thinking && /HTTP 400/.test(String(lastErr && lastErr.message || lastErr))) {
+            if (!reply && !imageRejected && body.thinking && /HTTP 400/.test(String(lastErr && lastErr.message || lastErr))) {
                 try { log('服务拒绝 thinking 参数，已改用普通请求重试', 'orange'); } catch (_) {}
                 delete body.thinking; delete body.reasoning_effort;
                 try { reply = await apiRequestAny(body, timeout); } catch (e2) { lastErr = e2; }
@@ -2538,12 +2692,18 @@ if (_l.hostname.startsWith('i.mooc.') || _l.hostname.startsWith('i.chaoxing.com'
             gptRunGate(function () { missonStart(); });
         });
     }
-} else if (_l.pathname.includes('/exam/test/reVersionTestStartNew')) {
+} else if (_l.pathname.includes('/exam/test/')) {
     showBox()
-    waitForJQueryElement('.mark_table .whiteDiv', 30000).then(function (found) { if (found) gptRunGate(function () { missonExam(); }); else logger('考试页等待超时（30s），未找到题目容器', 'red'); });
-} else if (_l.pathname.includes('/mooc2/exam/preview')) {
+    waitForJQueryElement('.mark_table .whiteDiv, .mark_table .questionLi', 30000).then(function (found) { if (found) gptRunGate(function () { missonExam(); }); else logger('考试页等待超时（30s），未找到题目容器', 'red'); });
+} else if (_l.pathname.includes('/mooc2/exam/preview') || _l.pathname.includes('/exam-ans/exam/preview') || _l.pathname.includes('/exam/preview')) {
     showBox()
-    waitForJQueryElement('.mark_table .questionLi', 30000).then(function (found) { if (found) gptRunGate(function () { missonExamPreview(); }); else logger('整卷预览页等待超时（30s），未找到题目列表', 'red'); });
+    waitForJQueryElement('.mark_table .questionLi, .mark_table .whiteDiv #submitTest .stem_answer', 30000).then(function (found) {
+        if (!found) { logger('考试预览页等待超时（30s），未找到题目', 'red'); return; }
+        gptRunGate(function () {
+            if (zxSingleQuestionPreview()) missonExam();
+            else missonExamPreview();
+        });
+    });
 } else if (_l.pathname.includes('/mooc2/work/dowork')) {
     showBox()
     waitForJQueryElement('.mark_table form', 30000).then(function (found) { if (found) gptRunGate(function () { missonHomeWork(); }); else logger('作业页等待超时（30s），未找到作业表单', 'red'); });
@@ -3793,6 +3953,52 @@ function updateAuthPanel(cachedModels) {
     }
 }
 
+var ZX_LOG_HISTORY_KEY = 'zx-sidepanel-log-history'
+function zxLogCleanText(str) {
+    return String(str == null ? '' : str)
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/\s+/g, ' ')
+        .trim()
+}
+function zxLogHistoryRead() {
+    try {
+        const arr = JSON.parse(sessionStorage.getItem(ZX_LOG_HISTORY_KEY) || '[]')
+        return Array.isArray(arr) ? arr : []
+    } catch (_) { return [] }
+}
+function zxLogHistoryWrite(arr) {
+    try { sessionStorage.setItem(ZX_LOG_HISTORY_KEY, JSON.stringify(arr.slice(-400))) } catch (_) { }
+}
+function zxLogHistoryPush(id, time, str, color) {
+    try {
+        const arr = zxLogHistoryRead()
+        arr.push({ id: id, t: time, msg: zxLogCleanText(str), color: color || '' })
+        zxLogHistoryWrite(arr)
+    } catch (_) { }
+}
+function zxLogHistoryUpdate(id, str, color) {
+    try {
+        const arr = zxLogHistoryRead()
+        for (let i = arr.length - 1; i >= 0; i--) {
+            if (arr[i].id === id) {
+                arr[i].msg = zxLogCleanText(str)
+                arr[i].color = color || arr[i].color || ''
+                zxLogHistoryWrite(arr)
+                return
+            }
+        }
+    } catch (_) { }
+}
+function zxLogHistoryText() {
+    try {
+        return zxLogHistoryRead().map(function (e) { return '[' + e.t + '] ' + e.msg }).join('\n').slice(-16000)
+    } catch (_) { return '' }
+}
+
 var _ne21LogColorMap = {
     red: '#dc2626', green: '#059669', blue: '#2563eb',
     yellow: '#ca8a04', orange: '#ea580c', purple: '#7c3aed',
@@ -3802,6 +4008,11 @@ function logger(str, color) {
     var _time = new Date().toLocaleTimeString()
     var c = (_ne21LogColorMap || {})[color] || color || '#334155'
     var $p = $('<p><span class="ne21-time">[' + _time + ']</span><span class="ne21-msg" style="color:' + c + ';">' + str + '</span></p>')
+    try {
+        var _logId = 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+        $p.attr('data-zx-log-id', _logId)
+        zxLogHistoryPush(_logId, _time, str, color)
+    } catch (_) { }
     var $log = $('#ne-21log', getPanelDocument())
     var _el = $log.length ? $log[0] : null
     var _stick = true
@@ -3816,6 +4027,10 @@ function updateLogEntry($p, str, color) {
     if (!$p || !$p.length) return
     var c = _ne21LogColorMap[color] || color || '#334155'
     $p.find('.ne21-msg').css('color', c).html(str)
+    try {
+        var _logId = $p.attr('data-zx-log-id')
+        if (_logId) zxLogHistoryUpdate(_logId, str, color)
+    } catch (_) { }
 }
 
 function getStr(str, start, end) {
@@ -6729,16 +6944,122 @@ function missonExam() {
     }
 }
 
+function zxVisible(el) {
+    try {
+        if (!el || !el.getBoundingClientRect) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    } catch (_) { return false; }
+}
+
+function zxExamLooksFinished() {
+    try {
+        const bodyText = String((document.body && document.body.innerText) || '');
+        if (/(考试已结束|考试完成|答题完毕|全部题目已完成|交卷成功|已提交试卷)/.test(bodyText)) return true;
+
+        const actions = document.querySelectorAll('.mark_table a, .mark_table button, .mark_table input[type="button"], .mark_table input[type="submit"]');
+        for (let i = 0; i < actions.length; i++) {
+            const el = actions[i];
+            if (!zxVisible(el)) continue;
+            const text = String(el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+            if (/^(交卷|提交试卷|提交答案|结束考试)/.test(text)) return true;
+        }
+
+        const nav = [];
+        const all = document.querySelectorAll('.mark_table a, .mark_table li, .mark_table button, .mark_table span, .mark_table div');
+        for (let i = 0; i < all.length; i++) {
+            const el = all[i];
+            if (!zxVisible(el)) continue;
+            if (el.closest && el.closest('.questionLi, .stem_answer, .answerBg, .answerList')) continue;
+            const text = String(el.textContent || '').trim();
+            if (!/^\d+$/.test(text)) continue;
+            const n = parseInt(text, 10);
+            if (n > 0) nav.push({ el: el, n: n });
+        }
+        if (nav.length >= 2) {
+            const max = Math.max.apply(null, nav.map(function (x) { return x.n; }));
+            const active = nav.find(function (x) {
+                const cls = String(x.el.className || '');
+                return /(?:^|[\s_-])(cur|current|active|now|selected|on)(?:$|[\s_-])/i.test(cls) ||
+                    !!x.el.getAttribute('aria-current') ||
+                    x.el.getAttribute('aria-selected') === 'true';
+            });
+            if (active && active.n === max) return true;
+        }
+    } catch (_) { }
+    return false;
+}
+
+function zxAutoPauseDone(reason) {
+    try {
+        if (window.__zxAllDone) return;
+        window.__zxAllDone = true;
+    } catch (_) { }
+    try { localStorage.setItem('ZhixingSetting.isPaused', 'true'); } catch (_) { }
+    try {
+        logger('检测到全部题目已完成，脚本已自动暂停' + (reason ? '（' + reason + '）' : ''), 'green');
+    } catch (_) { }
+    try {
+        const $b = $('#ne-21pause');
+        if ($b && $b.length) $b.attr('title', '全部题目已完成，脚本已暂停');
+    } catch (_) { }
+}
+
 function toNextExam() {
-    if (localStorage.getItem('ZhixingSetting.examTurn') === 'true') {
-        let $_examtable = $('.mark_table').find('.whiteDiv')
-        let $nextbtn = $_examtable.find('.nextDiv a.jb_btn')
-        setTimeout(() => {
-            $nextbtn.click()
-        }, setting.examTurnTime ? 2000 + (Math.floor(Math.random() * 5 + 1) * 1000) : 2000)
-    } else {
-        logger('用户设置不自动跳转下一题，请手动点击', 'blue')
+    if (localStorage.getItem('ZhixingSetting.examTurn') !== 'true') {
+        logger('用户设置不自动跳转下一题，请手动点击', 'blue');
+        return;
     }
+    // 同一页只允许安排一次跳题；之前多个回调各排一个 2s 定时器，会在下一题还没作答时连续点“下一题”。
+    if (window.__zxNextScheduled) return;
+    if (zxExamLooksFinished()) {
+        zxAutoPauseDone('最后一题或完成页');
+        return;
+    }
+
+    const candidates = document.querySelectorAll('.mark_table .whiteDiv .nextDiv a.jb_btn, .mark_table .nextDiv a.jb_btn, .mark_table a.jb_btn, .mark_table button.jb_btn, .mark_table .whiteDiv .nextDiv a, .mark_table .whiteDiv .nextDiv button, .mark_table .nextDiv a, .mark_table .nextDiv button');
+    let next = null;
+    for (let i = 0; i < candidates.length; i++) {
+        const el = candidates[i];
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+        const label = String(el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
+        const known = !!(el.matches && el.matches('.jb_btn'));
+        if (!label && !known) continue;
+        if (label && !/下一题|下一頁|下一页/.test(label)) continue;
+        next = el;
+        break;
+    }
+    if (!next) {
+        // 兜底：学习通部分逐题页的“下一题”是页面底部普通 button，不在 .nextDiv 里。
+        const all = document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]');
+        for (let i = 0; i < all.length; i++) {
+            const el = all[i];
+            if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+            if (el.closest && el.closest('.questionLi, .mark_table .questionLi')) continue;
+            const text = String(el.textContent || el.getAttribute('value') || el.getAttribute('aria-label') || '').trim();
+            if (!/^(下一题|下一題|下一頁|下一页)(\s|$)/.test(text)) continue;
+            if (el.getBoundingClientRect) {
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+            }
+            next = el;
+            break;
+        }
+    }
+    if (!next) return;
+    window.__zxNextScheduled = true;
+    setTimeout(function () {
+        window.__zxNextScheduled = false;
+        if (localStorage.getItem('ZhixingSetting.examTurn') !== 'true' ||
+            localStorage.getItem('ZhixingSetting.isPaused') === 'true' ||
+            !next.isConnected || next.getAttribute('aria-disabled') === 'true') return;
+        next.click();
+    }, setting.examTurnTime ? 2000 + (Math.floor(Math.random() * 5 + 1) * 1000) : 2000);
+}
+
+function zxSingleQuestionPreview() {
+    return !document.querySelector('.mark_table .questionLi') &&
+        !!document.querySelector('.mark_table .whiteDiv #submitTest .stem_answer');
 }
 
 function missonExamPreview() {
@@ -6807,6 +7128,7 @@ function doExamPreview(index, TiMuList) {
     if (index >= TiMuList.length) {
         gptSummarizeFails();
     logger('整卷预览答题已完成，请人工核对后手动交卷', 'green')
+        zxAutoPauseDone('整卷预览全部题目处理完毕');
         return
     }
 
@@ -8157,22 +8479,44 @@ function base64ToUint8Array(base64) {
 /* ==== 4.2.7 原生扩展侧栏桥：只由扩展侧栏通过 postMessage 调用 ==== */
 (function () {
     'use strict';
-    if (!zxExtMode()) return;
-    var seq = 0;
+    var documentId = Math.random().toString(36).slice(2);
+    var runKey = 'zx-sidepanel-exam-run';
+    function examScope() {
+        var m = String(location.pathname || '').match(/\/(exam-ans\/exam\/(?:test|preview)|mooc2\/exam\/preview|exam\/test|exam\/preview)(?:\/|$)/i);
+        if (!m) return '';
+        var params = new URLSearchParams(location.search);
+        var names = ['examId', 'examid', 'testId', 'testid', 'paperId', 'paperid', 'courseId', 'courseid', 'workId', 'workid'];
+        return JSON.stringify([m[1].toLowerCase()].concat(names.map(function (name) {
+            return params.get(name);
+        })));
+    }
+    function continueEnabled(scope) {
+        try { return !!scope && sessionStorage.getItem(runKey) === scope; } catch (_) { return false; }
+    }
+    function setContinue(enabled) {
+        var scope = examScope();
+        try {
+            if (enabled && scope) sessionStorage.setItem(runKey, scope);
+            else sessionStorage.removeItem(runKey);
+        } catch (_) { }
+    }
     function reply(id, ok, data) {
         try { window.postMessage({ __zxExt: true, source: 'zx-page', id: id, ok: !!ok, data: data || null }, '*'); } catch (_) { }
     }
     function status() {
-        var started = window.__gptRunStarted === true || window.__gptWantStart === true;
+        var started = window.__gptRunStarted === true || window.__gptWantStart === true || !gptManualStartOn();
         var paused = false;
         try { paused = localStorage.getItem('ZhixingSetting.isPaused') === 'true'; } catch (_) { }
         var review = { busy: false, paused: false, count: 0, total: 0 };
         try { if (typeof zx420 !== 'undefined' && zx420.getReviewState) review = zx420.getReviewState(); } catch (_) { }
         var log = '';
-        try {
-            var el = document.getElementById('ne-21log');
-            if (el) log = String(el.textContent || '').replace(/\s+/g, ' ').slice(-4000);
-        } catch (_) { }
+        try { if (typeof zxLogHistoryText === 'function') log = zxLogHistoryText(); } catch (_) { }
+        if (!log) {
+            try {
+                var el = document.getElementById('ne-21log');
+                if (el) log = String(el.textContent || '').replace(/\s+/g, ' ').slice(-16000);
+            } catch (_) { }
+        }
         var rate = '1';
         try { rate = localStorage.getItem('ZhixingSetting.rate') || '1'; } catch (_) { }
         var state = review.busy ? (review.paused ? '核对暂停' : '正在核对') : (paused ? '已暂停' : (started ? '运行中' : '待启动'));
@@ -8181,9 +8525,15 @@ function base64ToUint8Array(base64) {
             var media = document.querySelector('video,audio');
             if (media) mediaText = (media.paused ? '已暂停' : '播放中') + ' · ' + Math.floor(media.currentTime || 0) + 's';
         } catch (_) { }
-        return { state: state, started: !!started, paused: !!paused, review: review, rate: rate,
+        var scope = examScope();
+        return { bridgeVersion: '4.2.7-sidepanel', documentId: documentId,
+            ready: !!document.getElementById('ne-21pause'), examTask: !!scope,
+            autoContinue: continueEnabled(scope),
+            examTurn: localStorage.getItem('ZhixingSetting.examTurn') === 'true',
+            singleQuestion: !!scope && (location.pathname.includes('/exam/test/') || zxSingleQuestionPreview()),
+            state: state, started: !!started, paused: !!paused, review: review, rate: rate,
             media: mediaText, log: log, url: location.href, title: document.title,
-            examPreview: location.pathname.indexOf('/exam/preview') !== -1 };
+            examPreview: location.pathname.indexOf('/exam/preview') !== -1 && !zxSingleQuestionPreview() };
     }
     function api() {
         return { baseUrl: OWN_API.baseUrl || '', model: OWN_API.model || '',
@@ -8256,10 +8606,39 @@ function base64ToUint8Array(base64) {
             case 'status': return status();
             case 'apiGet': return api();
             case 'apiSet': return setApi(payload);
-            case 'toggle': return toggle();
+            case 'toggle': {
+                var before = status();
+                if (payload && (payload.documentId !== documentId || before.review.busy ||
+                    before.started !== payload.started || before.paused !== payload.paused)) {
+                    throw new Error('页面或任务状态已变化，请重试');
+                }
+                if (before.ready && before.paused && !before.started) {
+                    localStorage.setItem('ZhixingSetting.isPaused', 'false');
+                }
+                var after = toggle();
+                if (before.examTask) setContinue(after.started && !after.paused);
+                after.autoContinue = continueEnabled(examScope());
+                return after;
+            }
+            case 'setContinue':
+                if (!payload || payload.documentId !== documentId) throw new Error('页面已变化，请重试');
+                setContinue(payload.enabled);
+                return status();
+            case 'setExamTurn':
+                if (!payload || payload.documentId !== documentId || !status().singleQuestion) {
+                    throw new Error('当前页面不支持自动点击下一题');
+                }
+                localStorage.setItem('ZhixingSetting.examTurn', String(payload.enabled === true));
+                return status();
+            case 'resumeExam': {
+                var current = status();
+                if (!payload || payload.documentId !== documentId || !current.autoContinue ||
+                    !current.ready || current.started || current.paused || current.review.busy) return current;
+                return toggle();
+            }
             case 'setRate': return setRate(payload && payload.rate);
             case 'reviewStart':
-                if (location.pathname.indexOf('/exam/preview') === -1) throw new Error('只读核对目前仅支持考试预览页');
+                if (!status().examPreview) throw new Error('只读核对目前仅支持整卷预览页');
                 zx420.reviewPage();
                 return { started: true };
             case 'reviewRetry':
@@ -8274,7 +8653,7 @@ function base64ToUint8Array(base64) {
     }
     window.addEventListener('message', function (ev) {
         var d = ev.data;
-        if (!d || d.__zxExt !== true || d.source !== 'zx-sidepanel') return;
+        if (!zxExtMode() || !d || d.__zxExt !== true || d.source !== 'zx-sidepanel') return;
         try {
             var out = handle(d.cmd, d.payload);
             if (out && typeof out.then === 'function') {

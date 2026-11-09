@@ -1,13 +1,13 @@
 :root {
   color-scheme: light;
-  --bg: #f6f8fb;
+  --bg: #f0f4f8;
   --panel: #ffffff;
   --line: #e6edf5;
   --line-strong: #d8e2ee;
   --text: #172033;
   --muted: #6b7a90;
-  --blue: #2563eb;
-  --blue-2: #3b82f6;
+  --blue: #184daf;
+  --blue-2: #225fca;
   --green: #16a34a;
   --orange: #d97706;
   --red: #dc2626;
@@ -21,7 +21,6 @@ body {
   font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   display: flex;
   flex-direction: column;
-  min-width: 300px;
 }
 .top {
   flex: 0 0 auto;
@@ -30,7 +29,8 @@ body {
   justify-content: space-between;
   gap: 10px;
   padding: 14px 16px;
-  background: var(--panel);
+  background: linear-gradient(110deg, #152747, #204477);
+  color: #fff;
   border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -43,7 +43,7 @@ body {
   box-shadow: 0 5px 14px rgba(37, 99, 235, .28);
 }
 .brand h1 { margin: 0; font-size: 14px; letter-spacing: .1px; }
-.brand p { margin: 2px 0 0; font-size: 10.5px; color: var(--muted); }
+.brand p { margin: 2px 0 0; font-size: 11px; color: #d4e1f5; }
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 8px; border-radius: 999px;
@@ -74,6 +74,19 @@ main::-webkit-scrollbar-thumb { background: #c7d3e2; border-radius: 99px; }
   padding: 13px 13px 12px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, .02);
 }
+.status-card { border-top: 3px solid var(--blue); }
+.connection-help { display: flex; align-items: baseline; gap: 8px; }
+.connection-help p { margin: 0; overflow-wrap: anywhere; }
+.connection-help p:not(:empty) { margin-bottom: 10px; }
+.connection-help button { flex: 0 0 auto; }
+.continuation { margin: 10px 0 2px; min-height: 24px; flex-wrap: wrap; }
+.continuation small { color: var(--muted); font-size: 11px; }
+.continuation[hidden] { display: none; }
+#pageTitle { overflow-wrap: anywhere; }
+.log-card summary { cursor: pointer; font-weight: 700; }
+.log-card summary .dot { float: right; margin-top: 8px; }
+.log-card[open] summary { margin-bottom: 9px; }
+button:focus-visible, summary:focus-visible, .check input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .section-head h2 { margin: 0; font-size: 12.5px; font-weight: 700; color: #25324a; }
 .eyebrow { display: block; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
