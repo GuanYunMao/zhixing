@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name                知行 · 网课助手（私人 4.2.3）
+// @name                知行 · 网课助手（私人 4.2.4）
 // @namespace           zhixing.local
 // @downloadURL         https://guanyunmao.github.io/zhixing/zhixing.user.js
 // @updateURL           https://guanyunmao.github.io/zhixing/zhixing.user.js
-// @version             4.2.3
+// @version             4.2.4
 // @description         知行 · 网课助手：视频倍速、文档阅读、作业与考试辅助作答（不自动交卷）。需自备 OpenAI 兼容 API，点面板「开始」才动手。
 // @match               *://*.chaoxing.com/*
 // @match               *://*.xuexitong.com/*
@@ -437,6 +437,31 @@ var zx420 = (function () {
     function normalizeText(s) {
         return String(s || '').replace(/\u00a0/g, ' ').replace(/[\t\r ]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
     }
+    // 公式提取：MathJax / KaTeX / MathML 尽量转成可读文本，避免题干只剩空白。
+    function extractFormula(n) {
+        if (!n) return '';
+        let tex = '';
+        try {
+            const ann = n.matches('annotation[encoding]') ? n : n.querySelector('annotation[encoding]');
+            if (ann) tex = String(ann.textContent || '').trim();
+        } catch (_) { }
+        if (!tex && n.getAttribute) {
+            const mml = n.getAttribute('data-mathml') || n.getAttribute('data-tex') || n.getAttribute('data-latex') || '';
+            if (mml) tex = mml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+        if (!tex) {
+            let m = null;
+            try { m = n.matches('math') ? n : n.querySelector('math'); } catch (_) { }
+            if (m) tex = String(m.textContent || '').replace(/\s+/g, ' ').trim();
+        }
+        if (!tex) {
+            try {
+                const assist = n.querySelector('mjx-assistive-mml');
+                if (assist) tex = String(assist.textContent || '').replace(/\s+/g, ' ').trim();
+            } catch (_) { }
+        }
+        return tex;
+    }
     function cleanText(html) {
         const src = String(html || '');
         // 没有任何完整标签时按纯文本处理：数学表达式 x<3、a>b 不会被 DOM 当成标签吞掉。
@@ -446,6 +471,18 @@ var zx420 = (function () {
         const guarded = src.replace(/<(?![\/]?[a-zA-Z][^<>]*>)/g, '&lt;');
         const root = document.createElement('div');
         root.innerHTML = guarded;
+        // 先把公式容器转成文本，再删无关标签，避免公式内容随容器一起消失。
+        root.querySelectorAll('mjx-container, .MathJax, .katex, mjx-assistive-mml, math, [data-mathml]').forEach(n => {
+            if (!n.parentNode) return;
+            let p = n.parentElement, nested = false;
+            while (p && p !== root) {
+                if (p.matches && p.matches('mjx-container, .MathJax, .katex')) { nested = true; break; }
+                p = p.parentElement;
+            }
+            if (nested) return;
+            const tex = extractFormula(n);
+            if (tex) n.replaceWith(document.createTextNode(' \\( ' + tex + ' \\) '));
+        });
         // 不让元素触发资源或脚本，也不将 DOM 插回网页。
         root.querySelectorAll('script:not([type*="math/tex"]),style,iframe,audio,video').forEach(n => n.remove());
         root.querySelectorAll('annotation[encoding],script[type*="math/tex"]').forEach(n => {
@@ -455,7 +492,10 @@ var zx420 = (function () {
         root.querySelectorAll('svg title').forEach(n => {
             if (n.textContent) n.parentNode.insertAdjacentText('beforebegin', ' ' + n.textContent + ' ');
         });
-        root.querySelectorAll('img').forEach(n => n.replaceWith(document.createTextNode(n.alt ? ' [图片:' + n.alt + '] ' : ' [图片] ')));
+        root.querySelectorAll('img').forEach(n => {
+            const info = n.getAttribute('alt') || n.getAttribute('title') || n.getAttribute('data-tex') || n.getAttribute('data-latex') || '';
+            n.replaceWith(document.createTextNode(info ? ' [图片:' + info + '] ' : ' [图片] '));
+        });
         return normalizeText(root.textContent || '');
     }
 
@@ -596,7 +636,7 @@ var zx420 = (function () {
         const skipped = [];
         async function addBlock(title, html) {
             const text = cleanText(html);
-            parts.push({ type: 'text', text: title + ': ' + (text || '（非文字内容）') });
+            parts.push({ type: 'text', text: title + ': ' + (text || '（未提取到文字，可能是公式或图片；若有附图请看图作答）') });
             const sources = collectImageSources(html);
             if (!sources.length) return;
             hadImageRefs += sources.length;
@@ -910,7 +950,9 @@ var zx420 = (function () {
                 const label={same:'一致',different:'不一致',pending:'待复核',unanswered:'未作答'}[r.status]||r.status;
                 sum.textContent='第 '+r.question.id+' 题 · '+label+' · 已选 '+(r.question.selected||[]).join(',')+' · AI '+(r.answer||[]).join(',');
                 const desc=doc.createElement('pre');
-                desc.textContent='题干：'+r.question.text+'\n\n依据/异常：'+r.explanation+'\n\n模型完整正文：\n'+r.raw;
+                let rawView=r.raw;
+                try{rawView=JSON.stringify(JSON.parse(String(r.raw).replace(/^```[a-zA-Z]*\s*\n?/,'').replace(/\n?```\s*$/,'').trim()),null,2);}catch(_){}
+                desc.textContent='题干：'+(r.question.text||'（题干为空）')+'\n\n依据/异常：'+r.explanation+'\n\n模型完整正文：\n'+rawView;
                 box.append(sum,desc);list.appendChild(box);
             });
             if(!list.children.length){const p=doc.createElement('p');p.className='zx421-muted';p.textContent='暂无符合条件的记录';list.appendChild(p);}
@@ -2586,7 +2628,7 @@ function showBox() {
             <div id="ne-21box">
                 <div class="ne21-header" title="知行侧栏 · Alt+Z 切换悬浮球">
                     <span class="zx421-resize" title="拖动调整侧栏宽度" aria-hidden="true"></span>
-                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手 <small style="font-size:10px;opacity:.55;">4.2.1</small></h3>
+                    <h3 class="ne21-title"><span class="ne21-dot"></span>知行 · 网课助手</h3>
                     <div class="ne21-actions">
                         <span id="ne21FailChip" class="ne21-kbd" style="display:none;color:#dc2626;" title="本次被跳过、建议手动补的题目数"></span>
                         
