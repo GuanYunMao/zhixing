@@ -75,11 +75,11 @@
         <div class="ico">📦</div>
         <div>
           <div class="name">zhixing-4.2.8-single-extension.zip</div>
-          <div class="meta">326,218 字节 · Edge 114+ · 2026-11-10</div>
+          <div class="meta">326,207 字节 · Edge 114+ · 2026-11-10</div>
         </div>
       </div>
       <a class="btn" href="./zhixing-4.2.8-single-extension.zip" download>下载 4.2.8 单扩展</a>
-      <p class="sha">SHA256: 571F7E2271AC70120459168353B723D8D69BE6A7C21352FBD23BEA1F00DE2DC1</p>
+      <p class="sha">SHA256: 44FFBAABBAA911F0FD204641382E91561A9BCF04C831E6A0E20871C99C00C4A6</p>
       <div class="note"><b>必须开开发者模式：</b>Edge 只允许商店扩展或企业策略自动安装；本地扩展必须走「加载解压缩的扩展」。加载时开一次，之后日常不用再切。</div>
     </section>
 
@@ -116,7 +116,7 @@
     <section class="card">
       <h2>分享链接</h2>
       <p class="muted">把页面地址发给别人；安装包就在同目录，不需要登录 GitHub。</p>
-      <div class="copy"><input id="shareUrl" value="https://guanyunmao.github.io/zhixing/" readonly><button id="copyBtn" type="button">复制链接</button></div>
+      <div class="copy"><input id="shareUrl" value="" placeholder="页面加载后生成" readonly><button id="copyBtn" type="button">复制链接</button></div>
       <p class="muted" id="copyMsg" style="margin:8px 0 0"></p>
     </section>
 
@@ -135,7 +135,8 @@
 <script>
 (function(){
   var btn=document.getElementById('copyBtn'), input=document.getElementById('shareUrl'), msg=document.getElementById('copyMsg');
-  if(!btn) return;
+  if(!btn || !input) return;
+  input.value = location.href.split('#')[0];
   btn.addEventListener('click', async function(){
     try {
       await navigator.clipboard.writeText(input.value);
